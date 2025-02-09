@@ -1,5 +1,7 @@
 # 第一部分 宏观的东西
 
+> https://labs.play-with-docker.com/
+
 ## 第一章 30,000 英尺的容器
 
 > 这一章节中，我们可以学到：
@@ -2906,6 +2908,1434 @@ $ docker-compose down --volumes --rmi all
 
 
 
+
+## 第十章 Docker Swarm
+
+既然您已经知道了如何安装Docker、拉取映像和使用容器，那么下一个合乎逻辑的步骤就是大规模地完成这一切。
+
+- Docker Swarm
+- Swarm primer
+- 构建一个安全的 Swarm 集群
+- 在 swarm 上部署和管理应用程序
+- 服务日志
+- 命令
+
+
+
+### Docker Swarm
+
+Docker Swarm 是两件事情：
+
+- 一个企业级的 Docker 节点集群
+- 微服务应用的协调者
+
+在集群方面，Swarm 将一个或多个 Docker 节点分组到一个集群中。您将获得加密的分布式集群存储、加密的网络、相互的TLS、安全的集群连接令牌，以及使管理和轮换证书变得轻而易举的PKI。您甚至可以不中断地添加和删除节点。我们称之为集群 “swarms”。
+
+在编排方面，Swarm 使部署和管理复杂的微服务应用变得容易。您可以在 Compose 文件中声明式地定义应用程序，并使用简单的 Docker 命令将它们部署到集群中。您甚至可以执行滚动更新、回滚和缩放操作。
+
+Docker Swarm 类似于 Kubernetes —— 两者都是运行和管理容器化应用程序的集群。Kubernetes 更受欢迎，拥有更活跃的社区和生态系统。但是，Swarm 更容易使用，是中小型企业和小型应用程序部署的热门选择。学习 Swarm 还为您学习和使用 Kubernetes 做好准备。事实上，如果你打算学习 Kubernetes，你应该看看我的书，《*Quick Start Kubernetes*》 and 《*The Kubernetes Book*》。
+
+
+
+### Swarm primer
+
+在集群方面，集群是一个或多个 Docker 节点，可以是物理服务器、虚拟机、云实例、树莓派等。唯一的要求是它们都运行Docker，并且可以通过可靠的网络进行通信。
+
+**术语：**当提到 Docker Swarm 技术时，我们将 Swarm 写成大写的“S”。当将集群称为节点集群时，我们将使用小写的“s”。
+
+集群中的每个节点要么是管理者，要么是工作者：
+
+- 管理者运行控制平面服务，这些服务维护集群的状态，并将用户应用程序调度给工作人员
+- 工作程序运行用户应用程序
+
+Swarm 以默认安装方式在管理器和工作器上运行用户应用程序。但是，您可以强制用户应用程序在重要集群上的工作节点上运行，从而允许管理员专注于集群管理操作。
+
+集群将其状态和配置存储在内存中的分布式数据库中，该数据库跨所有管理节点进行复制。幸运的是，当您创建集群时，它会自动配置并自行处理。
+
+Swarm 使用 TLS 加密通信、认证节点和授权角色（管理人员和工作人员）。它还配置并执行自动键旋转。与集群存储一样，它在创建集群时自动配置并自行处理。
+
+下图显示了一个具有三个管理器、三个工作器和跨所有三个管理器复制的分布式集群存储的集群的高级视图。
+
+![](img/1737685075277.jpg)
+
+在编排方面，Swarm 使部署和管理容器化应用程序变得更加容易。它平衡了整个集群的工作负载，并添加了云原生功能，如自修复、扩展、部署和回滚。
+
+
+
+### 构建一个安全的集群
+
+在本节中，您将构建一个安全的群集群。我将构建如图10.2所示的集群，其中包含三个管理器和两个工作人员。您可以构建不同的集群，但通常适用以下规则：
+
+- 对于高可用性，建议使用三个或五个管理器
+- 足够的工作人员来处理您的应用程序要求
+
+![](img/1737685427926.jpg)
+
+#### 先决条件
+
+如果您按照我的建议去做，我建议您使用 Multipass 在您的笔记本电脑或本地计算机上创建 5 个 Docker 虚拟机。Multipass 是免费且易于使用的，我将在示例中使用它。
+
+但是，运行 5 台 Multipass 虚拟机需要大量的系统资源，每个虚拟机需要 2个cpu、40GB 磁盘空间和 4GB 内存。
+
+如果你的系统不能处理这些，你可以创建更少的管理人员和工人，或者在 Play with Docker16 中建立你的实验室。
+
+**Play with Docker （PWD）是一个免费的基于云的服务，可以让您在 4 小时的 Docker playground 中创建最多5个节点。**
+
+其他 Docker 环境也可以工作。您所需要的只是一个或多个可以通过可靠网络进行通信的 Docker 节点。您还会发现，如果配置名称解析，那么可以通过名称而不是 IP 地址引用节点，这将更加容易。
+
+不建议在 Docker Desktop 上进行后续操作，因为它只支持单个节点，这对于本书后面的一些示例来说是不够的。
+
+
+
+#### Build your Docker nodes
+
+使用的是 Multipass ，但是我通过 Play with Docker16 来创建的服务器
+
+
+
+#### Initializing a new swarm
+
+构建 swarm 的过程称为 *initializing a swarm*，这是一个高级的过程：
+
+- 初始化第一个管理器
+- 加入其他经理
+- 加入工人
+
+在 Docker 节点加入集群之前，它以单引擎模式运行，只能运行常规容器。加入集群后，它切换到集群模式，并可以运行称为集群服务的高级容器。稍后将详细介绍服务。
+
+当你在当前处于单引擎模式的 docker 节点上运行 docker swarm init 命令时，docker 会将其切换到集群模式，创建一个新的集群，并使该节点成为集群的第一个管理器。然后，您可以添加更多节点作为管理人员和工作人员，这些节点也会切换到群模式。
+
+您将完成以下所有内容：
+
+- 从mgr1初始化一个新的群集
+- 将 wrk1 和 wrk2 连接为工作节点
+- 将 mgr2 和 mgr3 作为额外的管理器加入
+
+完成此过程后，所有五个节点都将处于群集模式，并且是同一群集的一部分。
+
+示例将按照图 10.2 来进行配置。
+
+##### Step 1.  登陆到 mgr1 并且初始化 warm
+
+请确保使用 mgr1 节点的私有IP地址。
+
+~~~shell
+$ docker swarm init --advertise-addr 192.168.0.9:2377 --listen-addr 192.168.0.9:2377
+Swarm initialized: current node (7slloenof5qadt0ekhglljreq) is now a manager.
+
+To add a worker to this swarm, run the following command:
+
+    docker swarm join --token SWMTKN-1-4tu5loip9j0pd0oilfgcsrth9u86dqthwv4dxn0l9k6e9yntq5-bkgh8h5e6kjjyoeqojgpkkq8b 192.168.0.9:2377
+
+To add a manager to this swarm, run 'docker swarm join-token manager' and follow the instructions.
+~~~
+
+让我们逐步了解命令的不同部分：
+
+- `docker swarm init` 告诉 Docker 用这个节点作为第一个管理器初始化一个新的集群。
+- `--advertise-addr` 标志是可选的，它告诉 Docker 要将哪个节点的IP地址作为 swarm API 端点发布。它通常是节点的IP地址之一，但也可以是外部负载均衡器。
+- `--listen-addr` 标志告诉 Docker 该节点的哪个接口可以接受集群流量。如果不指定，它的默认值与 `--advertise-addr` 相同。但是，如果 `--dvertise-addr` 是一个负载均衡器，则必须使用 `--listen-addr` 来指定本地 IP。
+
+我建议在重要的生产环境中指定这两个标志。然而，对于大多数实验室环境，您可以在没有任何标志的情况下运行 a `docker swarm init`。
+
+您还可以为发布和侦听地址指定不同的端口，但通常使用默认的2377。
+
+
+
+##### step 2. 在 swarm 监听节点
+
+~~~shell
+$ docker node ls
+ID                            HOSTNAME   STATUS    AVAILABILITY   MANAGER STATUS   ENGINE VERSION
+7slloenof5qadt0ekhglljreq *   node5      Ready     Active         Leader           27.4.1
+~~~
+
+mgr1 是集群中唯一的节点，被列为Leader。我们稍后会谈到 leader。
+
+
+
+##### step 3. 从 mgr1 运行以下命令，查看添加新工作者和管理器所需的命令和令牌。
+
+~~~shell
+$ docker swarm join-token worker
+To add a worker to this swarm, run the following command:
+
+    docker swarm join --token SWMTKN-1-4tu5loip9j0pd0oilfgcsrth9u86dqthwv4dxn0l9k6e9yntq5-bkgh8h5e6kjjyoeqojgpkkq8b 192.168.0.9:2377
+    
+$ docker swarm join-token manager
+To add a manager to this swarm, run the following command:
+
+    docker swarm join --token SWMTKN-1-4tu5loip9j0pd0oilfgcsrth9u86dqthwv4dxn0l9k6e9yntq5-9xsj31luv8hmvc8aw9qwm83jj 192.168.0.9:2377
+~~~
+
+注意，除了连接令牌（SWMTKN…）之外，这些命令是完全相同的。你应该把你的连接令牌放在一个安全的地方，因为它们是连接其他节点到你的集群所需要的！
+
+##### step 4. 添加一个 worker
+
+登录到 wrk1 并使用正确的命令和令牌将其作为工作节点连接起来。我在示例中添加了可选的 **advertising-addr** 和 **listen-addr** 标志，以便您知道如何使用它们。您可以关闭它们，但是如果要使用它们，请确保为您的环境使用正确的ip。
+
+~~~shell
+$ docker swarm join --token SWMTKN-1-4tu5loip9j0pd0oilfgcsrth9u86dqthwv4dxn0l9k6e9yntq5-bkgh8h5e6kjjyoeqojgpkkq8b 192.168.0.9:2377 --advertise-addr 192.168.0.13:2377 --listen-addr 192.168.0.13:2377
+
+This node joined a swarm as a worker.
+[node1] (local) root@192.168.0.13 ~
+~~~
+
+如果遇到连接问题，请确保所有节点之间打开以下网口：
+
+- 2377/tcp：用于客户端到集群的安全通信
+- 7946/tcp和udp：用于控制平面 gossip
+- 4789/udp：基于vxlan的覆盖网络
+
+##### step 5. 添加另外一个 worker
+
+在 wrk2 上重复前面的步骤，这样您就有了两个工作者。如果指定了 `--advertise-addr` 和 `--listen-addr` 标志，请确保使用 wrk2 的IP地址。
+
+~~~shell
+$ docker swarm join --token SWMTKN-1-4tu5loip9j0pd0oilfgcsrth9u86dqthwv4dxn0l9k6e9yntq5-bkgh8h5e6kjjyoeqojgpkkq8b 192.168.0.9:2377 --advertise-addr 192.168.0.12:2377 --listen-addr 192.168.0.12:2377
+This node joined a swarm as a worker.
+[node2] (local) root@192.168.0.12 ~
+~~~
+
+##### step 6.  添加 manager
+
+登录到 mgr2 和 magr3，并使用步骤 3 中的管理器令牌将它们作为管理器连接起来。同样，您不必使用 `--advertise-addr` 和 `--listen- addr` 标志，但如果使用，请确保为您的环境使用正确的ip。
+
+~~~shell
+$ docker swarm join --token SWMTKN-1-4tu5loip9j0pd0oilfgcsrth9u86dqthwv4dxn0l9k6e9yntq5-9xsj31luv8hmvc8aw9qwm83jj 192.168.0.9:2377 --advertise-addr 192.168.0.11:2377 --listen-addr 192.168.0.11:2377
+This node joined a swarm as a manager.
+[node3] (local) root@192.168.0.11 ~
+
+$ docker swarm join --token SWMTKN-1-4tu5loip9j0pd0oilfgcsrth9u86dqthwv4dxn0l9k6e9yntq5-9xsj31luv8hmvc8aw9qwm83jj 192.168.0.9:2377 --advertise-addr 192.168.0.10:2377 --listen-addr 192.168.0.10:2377
+This node joined a swarm as a manager.
+[node4] (local) root@192.168.0.10 ~
+~~~
+
+##### step 7. 列出所有的 swarm 节点
+
+通过在任何管理节点上运行 `docker node ls`，列出集群中的节点。
+
+~~~shell
+$ docker node ls
+ID                            HOSTNAME   STATUS    AVAILABILITY   MANAGER STATUS   ENGINE VERSION
+y2ljy3s795xtdcro8m2i39l6x     node1      Ready     Active                          27.4.1
+9zqb0mnu2k09hx283j587mntv     node2      Ready     Active                          27.4.1
+1hylfu4neng42yawq5vpskiuu     node3      Ready     Active         Reachable        27.4.1
+ge8oa2unt056yyqnq48ciwa4f     node4      Ready     Active         Reachable        27.4.1
+7slloenof5qadt0ekhglljreq *   node5      Ready     Active         Leader           27.4.1
+[node5] (local) root@192.168.0.9 ~
+~~~
+
+如果您仔细查看 MANAGER STATUS 列，您将看到所有三个 manager 都显示为可达或领导。该列中没有任何内容的节点是工作节点。名称后面带有星号的管理器就是要从中执行命令的管理器。
+
+祝贺你。您已经创建了一个包含三个管理人员和两个工作人员的五节点集群。每个节点上的Docker引擎现在以群集模式运行，并且群集使用 TLS 进行保护。
+
+
+
+#### Swarm manager 高可用
+
+集群集群是高可用的（HA），这意味着一个或多个管理器可能出现故障，而集群将继续运行。
+
+从技术上讲，Swarm 实现了 *active/passive multi-manager HA*。这意味着一个有三个经理人的群体将有一个主动经理人，另外两个将是被动经理人。在集群中，我们称主动管理者为 **leader**，称被动管理者为 **follower**，leader 是唯一可以更新集群配置的管理者。 
+如果 leader 失败，其中一个 follower 将被选举为新的 leader，并且群体将继续运行，不中断任何服务。如果你向追随者发送命令，它就会把命令代理给 leader。
+
+图10.3 显示向追随者管理器发出命令，请求对群进行更新。
+
+- 步骤1：显示了发出命令的过程。
+- 步骤2：follower manager 接收并代理给leader的命令。
+- 步骤3：显示了执行该命令的负责人。
+
+![](img/1737699116210.jpg)
+
+领导者和追随者是 **Raft** 术语，我们使用它是因为 Swarm 实现了 Raft 共识算法，以在多个高可用性管理器之间保持一致的集群状态。
+
+> https://raft.github.io/
+
+以下是适用于管理HA的良好做法：
+
+- 始终部署奇数个管理人员
+- 不要部署太多的管理人员（通常3到5个就足够了）
+- 跨可用性区域分布管理器
+
+考虑图10.4中所示的两个示例。左边的集群有偶数个管理器，一个网络事件创建了一个网络分区，两边各有两个管理器。我们称之为“大脑分裂”，因为任何一方都不能确定自己拥有多数，集群进入只读模式。当这种情况发生时，您的应用程序继续工作，但您不能对它们或集群进行更改。然而，右边的集群有奇数个管理器，并且在读写模式下保持完全运行，因为网络分区右边的两个管理器知道它们有多数（quorum）。所以，尽管右边的群体管理者比左边的少，但它的可用性更好。
+
+![](img/1737699708242.jpg)
+
+与所有的共识算法一样，更多的参与者意味着更长的时间来达成共识。这就像选择去哪里吃饭 —— 三个人总是比33个人更快更容易做出决定！考虑到这一点，通常为HA配备三到五个管理人员是最佳实践。七只也许可以，但对于大多数 warms 来说，三到五只通常是合适的。
+
+关于HA管理器的最后一个警告。虽然您应该将管理器分散到多个可用性区域，但它们需要通过快速可靠的网络连接起来。这意味着在实现多云集群实现多云HA之前，您应该仔细考虑并进行大量测试。
+
+
+
+#### 内置 Swarm 安全
+
+Swarm 提供了许多安全特性，例如内置的证书颁发机构（CA）、相互TLS、加密集群存储、加密网络、加密节点id和连接令牌等等。
+
+幸运的是，Swarm会自动为它们配置合理的默认值。
+
+
+
+#### 锁定一个 Swarm
+
+尽管 Swarm 具有所有的安全特性，但是重新启动旧的管理器或恢复旧的备份可能会危及您的集群。例如，可以访问旧管理节点的恶意参与者可能能够将其重新加入到集群中，并获得不必要的访问权限。
+
+幸运的是，您可以使用 Swarm 的自动锁定功能强制重新启动的管理器在被允许返回 Swarm 之前提供密钥。
+
+通过将 `--autolock` 标志传递给 docker swarm init 命令，可以在构建时自动锁定新的群集。对于已存在的群集，您可以使用 `docker swarm update` 命令自动锁定它们。
+
+在集群管理器中运行以下命令来锁定现有的 swarm 集群。
+
+~~~shell
+$ docker swarm update --autolock=true
+Swarm updated.
+To unlock a swarm manager after it restarts, run the `docker swarm unlock`
+command and provide the following key:
+
+    SWMKEY-1-/QEw14o89YrRH9uOZR3FMl96lRGL1hwFP5vA/chAOdY
+
+Remember to store this key in a password manager, since without it you
+will not be able to restart the manager.
+~~~
+
+虽然可以在任何管理器上运行 `docker swarm unlock-key` 命令来查看您的解锁密钥，但您还应该在集群外部保留一个安全副本，以防您被锁定在集群之外。
+
+在其中一个管理器上重启 Docker，看看它是否自动重新加入集群。
+
+~~~shell
+$ sudo systemctl restart docker
+~~~
+
+试着列出集群中的节点。
+
+~~~shell
+$ docker node ls
+Error response from daemon: Swarm is encrypted and needs to be unlocked before it can be used.
+~~~
+
+Docker 已重新启动，但不允许管理器重新加入集群。您可以通过从其他管理器中运行一个 `docker node ls` 来证明这一点，并且重新启动的管理器将被列为 down 且不可访问。
+
+运行 `docker swarm unlock` 命令为已启动的管理器解锁 swarm，并提供解锁密钥。
+
+~~~shell
+$ docker swarm unlock
+Please enter unlock key: <enter your key>
+~~~
+
+Docker 将重新承认该节点进入集群，并在以后的命令中显示为就绪和可访问。
+
+您应该锁定您的生产集群并保护解锁密钥。
+
+#### 专用 manager node
+
+默认情况下，Swarm 在工作人员和管理人员上运行用户应用程序。但是，您可能希望将生产集群配置为仅在 **worker** 上运行用户应用程序。这使得管理者可以专注于控制层面的职责。
+
+在任何管理器上运行以下命令以防止它运行用户应用程序。您需要使用管理人员的名称，并且如果您希望强制用户应用程序仅在 worker 上运行，则需要在所有 manager上运行它。
+
+~~~shell
+$ docker node update --availability drain node5
+node5
+[node5] (local) root@192.168.0.9 ~
+$ docker node update --availability drain node4
+node4
+[node5] (local) root@192.168.0.9 ~
+$ docker node update --availability drain node3
+node3
+[node5] (local) root@192.168.0.9 ~
+~~~
+
+在稍后的步骤中，当您部署带有多个副本的服务时，您将看到它的影响。
+
+既然您已经构建了一个集群，并且理解了 leader 和 manager HA的概念，那么让我们转到应用程序方面。
+
+
+
+#### 部署和管理一个 app 在 swarm
+
+集群节点可以运行常规容器，但它们也可以运行称为服务的增强容器。每个服务都使用一个容器定义，并使用云原生特性（如自修复、可伸缩、自动部署和回滚）对其进行增强。
+
+在本节中，您将部署一个简单的 web 服务器作为集群服务，并了解如何扩展它、执行 rollout 和删除它。
+
+Swarm 允许您以两种方式创建和管理服务：
+
+- 命令行上的命令
+- 声明性地使用 Compose file
+
+我们将在下一章讨论撰写文件。现在，我们将关注命令式方法。
+
+运行以下命令部署一个名为 **web-fe** 的新服务，其中包含五个相同的副本。
+
+> 在使用 docker 模拟的网站中，我们需要自己去构建 images，根据作者提供的 github 下载代码，并进行构建 images
+
+~~~shell
+$ docker service create --name web-fe -p 8080:8080 --replicas 5 nigelpoulton/ddd-book:web0.1
+
+$ docker service create --name web-fe -p 8080:8080 --replicas 5 nginx:latest
+
+z7ovearqmruwk0u2vc5o7ql0p
+overall progress: 5 out of 5 tasks
+1/5: running
+2/5: running
+3/5: running
+4/5: running
+5/5: running
+verify: Service converged
+~~~
+
+`docker service create` 命令告诉 docker 部署一个新服务。`--name` 标志叫 **web-fe**，`-p` 标志将每个集群节点上的端口8080映射到每个服务副本（容器）内的8080，`--replicas` 标志告诉 swarm 部署该服务的五个副本。
+
+最后一行告诉 Swarm 从哪个 image 构建副本。
+
+**术语**：在提到服务时，我们可以互换使用术语副本和容器。例如，定义五个副本的服务将部署五个相同的容器。
+
+1. Docker 客户端将命令发送到集群管理器，leader 管理器开始在 swarm 中部署五个副本。
+2. 您配置了这个集群，以便用户应用程序不会在 manager上运行，这意味着所有五个副本都将在您的 worker 节点上运行。
+3. 接收到工作任务的每个工作节点拉取 image，启动所需的容器，并创建端口映射。
+
+然而，它并没有就此结束。您发出的命令请求一个具有五个副本的新服务，Swarm 将其作为所需状态存储在集群存储中。
+
+在后台，Swarm 运行一个协调循环，不断地将集群的观察状态与期望状态进行比较。当两个 state 匹配时，世界将是一个快乐的地方，不需要进一步的行动。当它们不匹配时，Swarm 会采取行动使观察到的状态与期望的状态一致。
+
+例如，如果承载五个副本之一的工作线程失败，则集群的观察状态将从5个副本下降到4个副本，并且不再与期望的5个状态匹配。一旦群体观察到差异，它就会启动一个新的副本，使观察到的状态与期望的状态保持一致。我们称之为“协调”或“自我修复”，这是云原生应用程序的一个关键原则。
+
+您很快就会了解到，所需的状态和协调也是伸缩、滚出和回滚的核心。
+
+
+
+#### Viewing and inspecting services
+
+运行 `docker service ls` 命令查看服务器上所有服务的列表。
+
+~~~shell
+$ docker service ls
+ID         NAME      MODE         REPLICAS   IMAGE                 PORTS
+z7o...uw   web-fe    replicated   5/5        nigelpoulton/ddd...   *:8080->8080/tcp
+~~~
+
+输出显示单个服务以及一些基本配置和状态信息。除其他事项外，您可以看到服务的名称以及所有五个副本都在运行。如果您在部署服务后很快运行该命令，则某些副本可能不会处于运行状态。这通常是因为工人仍在提取图像并启动副本。
+
+您可以运行 `docker service ps` 命令来查看服务副本的列表以及每个副本的状态。
+
+~~~shell
+$ docker service ps web-fe
+ID				NAME        IMAGE                          NODE   DESIRED    CURRENT
+817...f6z		web-fe.1    nigelpoulton/ddd-book:web0.1   wrk1   Running    Running 2 mins
+a1d...mzn		web-fe.2    nigelpoulton/ddd-book:web0.1   wrk1   Running    Running 2 mins 
+cc0...ar0       web-fe.3    nigelpoulton/ddd-book:web0.1   wrk2   Running    Running 2 mins
+6f0...azu       web-fe.4    nigelpoulton/ddd-book:web0.1   wrk1   Running    Running 2 mins
+dyl...p3e       web-fe.5    nigelpoulton/ddd-book:web0.1   wrk2   Running    Running 2 mins
+~~~
+
+输出在其各自的行上显示每个副本，包括它所运行的节点以及每个副本的所需状态和当前观察到的状态。正如预期的那样，您在所有工作人员中平衡了五个副本。
+
+如果需要查询服务的详细信息，可以执行 `docker service inspect` 命令。
+
+~~~shell
+$ docker service inspect --pretty web-fe
+~~~
+
+该示例使用 `--pretty` 标志将输出限制为以易于阅读的格式打印的最有趣的项。如果你把漂亮的旗子去掉，你会得到更多的信息。我强烈**建议通读 docker 检查命令的输出，因为它们是了解底层情况的好方法。**
+
+
+
+#### 复制服务与全局服务
+
+Swarm 有两种将副本部署到节点的模式：
+
+- Replicated (default)
+- Global
+
+默认复制模式允许您根据需要部署尽可能多的副本，并尝试将它们均匀地分布在可用节点上。
+
+全局模式在集群中的每个可用节点上部署一个副本。
+
+这两种模式都尊重节点的可用性，并且只将副本部署到符合条件的节点。例如，如果不允许集群将应用程序部署到管理器上，那么这两种模式都只会部署到工作器上。
+
+如果你想部署 global services，你需要在 `docker service create` 命令中添加 `--mode global` 标志。显然，它不支持 `--replicas` 标志，因为它总是在每个可用节点上部署一个副本。
+
+
+
+#### 缩放服务
+
+服务的另一个强大特性是能够通过添加或删除副本来扩展或缩小它们。
+
+假设业务正在蓬勃发展，您的 web 前端的请求数量增加了一倍。幸运的是，您可以使用 `docker service scale` 命令轻松地扩展副本的数量。
+
+运行以下命令将 **web-fe** 服务从5个副本扩展到10个副本。
+
+~~~shell
+$ docker service scale web-fe=10
+web-fe scaled to 10
+overall progress: 10 out of 10 tasks
+1/10: running  [==================================================>]
+2/10: running  [==================================================>]
+3/10: running  [==================================================>]
+4/10: running  [==================================================>]
+5/10: running  [==================================================>]
+6/10: running  [==================================================>]
+7/10: running  [==================================================>]
+8/10: running  [==================================================>]
+9/10: running  [==================================================>]
+10/10: running  [==================================================>]
+verify: Service web-fe converged
+~~~
+
+在幕后，该命令将集群存储中的 web-fe 服务的所需状态从5个副本更新为10个副本。调和循环读取10个副本的新期望状态，将其与5个副本的当前观察状态进行比较，并增加 5 个以使观察状态与新的期望状态同步。
+
+运行另一个 `docker servic ls` 验证操作是否成功。
+
+~~~shell
+$ docker service ls
+ID         NAME     MODE         REPLICAS   IMAGE                 PORTS
+z7o...uw   web-fe   replicated   10/10      nigelpoulton/ddd...   *:8080->8080/tcp
+~~~
+
+如果运行 `docker service ps` 命令，您将看到所有可用节点上的策略是均衡的。在这个例子中，它们在两个可用的工人之间是平衡的。如果您的集群有十个工作节点，那么您可能会在每个工作节点上运行一个副本。
+
+~~~shell
+$ docker service ps web-fe
+ID         NAME      IMAGE             NODE  DESIRED  CURRENT
+nwf...tpn  web-fe.1  nigelpoulton/ddd-book:web0.1  wrk1  Running  Running 7 mins
+yb0...e3e  web-fe.2  nigelpoulton/ddd-book:web0.1  wrk2  Running  Running 7 mins
+mos...gf6  web-fe.3  nigelpoulton/ddd-book:web0.1  wrk2  Running  Running 7 mins
+utn...6ak  web-fe.4  nigelpoulton/ddd-book:web0.1  wrk1  Running  Running 7 mins
+2ge...fyy  web-fe.5  nigelpoulton/ddd-book:web0.1  wrk2  Running  Running 7 mins
+64y...m49  web-fe.6  nigelpoulton/ddd-book:web0.1  wrk2  Running  Running about a min
+ild...51s  web-fe.7  nigelpoulton/ddd-book:web0.1  wrk1  Running  Running about a min
+vah...rjf  web-fe.8  nigelpoulton/ddd-book:web0.1  wrk1  Running  Running about a min
+xe7...fvu  web-fe.9  nigelpoulton/ddd-book:web0.1  wrk2  Running  Running 45 secs ago
+l7k...jkv  web-fe.10 nigelpoulton/ddd-book:web0.1  wrk1  Running  Running 46 secs ago
+~~~
+
+在后台，Swarm 运行一个名为 spread 的调度算法，试图在可用节点之间尽可能均匀地平衡副本。
+
+运行另一个 `docker service scale` 命令，将副本数量降至5个。
+
+~~~shell
+$ docker service scale web-fe=5
+web-fe scaled to 5
+overall progress: 5 out of 5 tasks
+1/5: running   [==================================================>]
+2/5: running   [==================================================>]
+3/5: running   [==================================================>]
+4/5: running   [==================================================>]
+5/5: running   [==================================================>]
+verify: Service web-fe converged
+~~~
+
+现在您已经了解了如何扩展服务，接下来让我们看看如何删除服务。
+
+
+
+#### 删除服务
+
+运行下面命令删除 web-fe 服务。要小心使用这个命令，因为他不需要确认。
+
+~~~shell
+$ docker service rm web-fe
+web-fe
+~~~
+
+确认它不见了。
+
+~~~shell
+$ docker service ls
+ID      NAME    MODE   REPLICAS    IMAGE      PORTS
+~~~
+
+
+
+#### Rollouts
+
+> 滚动部署
+
+应用程序更新是生活中的一个事实，在很长一段时间里，它们都是痛苦的。我个人已经失去了足够多的周末主要的应用程序更新，我不想再这样做了。
+
+幸运的是，多亏了 Docker 服务，更新精心设计的微服务应用变得很容易。
+
+**术语：**我们使用 *rollout*、*updates* 和 *rolling updates* 等术语来表示同一件事——更新一个实时应用程序。
+
+您即将部署一个新服务来帮助演示 rollout。但是，在此之前，您将为该服务创建一个新的覆盖网络。这不是必需的，但我希望您了解如何将服务连接到网络。
+
+运行以下两个命令创建一个新的覆盖网络，名为：**uber-net**，然后检查它是否存在。
+
+~~~shell
+[node5] (local) root@192.168.0.9 /etc/docker
+$ docker network create -d overlay uber-net
+44awtdq83iombt82txjze2ezs
+[node5] (local) root@192.168.0.9 /etc/docker
+
+$ docker network ls
+NETWORK ID     NAME       DRIVER    SCOPE
+44awtdq83iom   uber-net   overlay   swarm
+[node5] (local) root@192.168.0.9 /etc/docker
+~~~
+
+新网络存在，并成功创建为覆盖整个集群的覆盖网络。您将在后面的章节中了解覆盖网络，但现在，知道它们跨越所有集群节点和同一覆盖网络上的所有容器可以通信就足够了，即使它们部署在不同的节点上。
+
+图10.5 显示了四个集群节点通过一个三层路由器连接到两个不同的底层网络。覆盖网络跨越所有四个节点，并创建一个抽象所有底层网络的单一平面第二层网络。所有容器副本都连接到覆盖层，并且可以相互通信。
+
+![](img/1737709011511.jpg)
+
+让我们创建一个新服务并将其连接到 **uber-net** 网络。
+
+~~~shell
+$ docker service create --name uber-svc \
+   --network uber-net \
+   -p 8080:8080 --replicas 12 \
+   nigelpoulton/ddd-book:web0.1
+dhbtgvqrg2q4sg07ttfuhg8nz
+overall progress: 12 out of 12 tasks
+1/12: running
+2/12: running
+3/12: running
+<Snip>
+[==================================================>]
+[==================================================>]
+[==================================================>]
+12/12: running  [==================================================>]
+verify: Service converged
+~~~
+
+让我们来回顾一下刚刚发生的事情。
+
+在第一行，您将服务命名为 **uber-svc**。然后使用 `--network` 标志告诉 Docker 将所有服务副本附加到新的 **uber-net** 网络中。然后，将所有12个副本中的每个集群节点上的 8080 映射到端口 8080。最后，您告诉 Docker 将12个副本建立在哪个映像上。
+
+这种在每个集群节点（包括没有运行副本的节点）上发布服务的模式称为入口模式（ingress mode），是默认模式。另一种选择是主机模式，它只在运行副本的节点上发布服务。
+
+运行 `docker service ls`，并检查该服务和每个副本的状态。
+
+~~~shell
+$ docker service ls
+ID            NAME      REPLICAS  IMAGE
+dhbtgvqrg2q4  uber-svc  12/12     nigelpoulton/ddd-book:web0.1
+$ docker service ps uber-svc
+ID        NAME          IMAGE                NODE  DESIRED   CURRENT STATE
+0v...7e5  uber-svc.1    nigelpoulton/ddd-book:web0.1  wrk1  Running   Running 1 min
+bh...wa0  uber-svc.2    nigelpoulton/ddd-book:web0.1  wrk2  Running   Running 1 min
+23...u97  uber-svc.3    nigelpoulton/ddd-book:web0.1  wrk2  Running   Running 1 min
+82...5y1  uber-svc.4    nigelpoulton/ddd-book:web0.1  wrk2  Running   Running 1 min
+c3...gny  uber-svc.5    nigelpoulton/ddd-book:web0.1  wrk1  Running   Running 1 min
+e6...3u0  uber-svc.6    nigelpoulton/ddd-book:web0.1  wrk2  Running   Running 1 min
+78...r7z  uber-svc.7    nigelpoulton/ddd-book:web0.1  wrk1  Running   Running 1 min
+2m...kdz  uber-svc.8    nigelpoulton/ddd-book:web0.1  wrk2  Running   Running 1 min
+b9...k7w  uber-svc.9    nigelpoulton/ddd-book:web0.1  wrk1  Running   Running 1 min
+ag...v16  uber-svc.10   nigelpoulton/ddd-book:web0.1  wrk2  Running   Running 1 min
+e6...dfk  uber-svc.11   nigelpoulton/ddd-book:web0.1  wrk1  Running   Running 1 min
+e2...k1j  uber-svc.12   nigelpoulton/ddd-book:web0.1  wrk1  Running   Running 1 min
+~~~
+
+通过打开 web 浏览器并将其指向端口 8080 上任意集群节点的IP地址来连接该服务。如果您正在使用 Multipass，则需要连接到其中一个节点的192.168地址。
+
+![](img/1737709413115.jpg)
+
+您还应该将浏览器指向其中一个管理器的IP，以证明您可以从没有运行副本的节点访问服务。这就是入口模式的美妙之处——您可以从集群中的每个节点访问服务，甚至是没有运行副本的节点。
+
+现在，网页上有两本书的链接。假设您需要添加第三本书。在现实世界中，您需要更新应用程序代码并创建包含更新的新图像。我已经这样做了，并将图像上传到带有web0.2标签的Docker Hub repo。剩下要做的就是执行rollout。
+
+假设您需要分阶段地进行 rollout，每次更新两个副本，每个副本之间有20秒的延迟。您可以使用以下命令来完成此操作。
+
+~~~shell
+$ docker service update \
+   --image nigelpoulton/ddd-book:web0.2 \
+   --update-parallelism 2 \
+   --update-delay 20s \
+   uber-svc
+uber-svc
+overall progress: 2 out of 12 tasks
+1/12: running		[==================================================>]
+2/12: running		[==================================================>]
+3/12: ready			[=====================================>]
+4/12: ready			[=====================================>]
+5/12:
+6/12:
+<Snip>
+11/12:
+12/12:
+~~~
+
+让我们回顾一下这个命令。
+
+`docker service update` 让你更新已存在的服务。这个例子告诉 docker 将所有12个副本更新为映像的新web0.2版本。
+
+`--update-parallelism` 告诉 docker 一次更新两个副本。
+
+`--update-delay` 告诉 docker 在每批更新后插入20秒的冷却期。
+
+最后一行告诉它要更新哪个服务。
+
+如果运行 `docker service ps uber-svc` 更新进程，有些副本将显示新版本，有些副本将显示旧版本。如果给该操作足够的时间来完成，那么所有的副本最终都会达到所需的新状态并显示 web0.2 图像。
+
+~~~shell
+$ docker service ps uber-svc
+ID        NAME          IMAGE            NODE  DESIRED   CURRENT STATE
+7z...nys  uber-svc.1    nigelpoulton/ddd-book:web0.2   wrk1  Running   Running 13 secs
+0v...7e5  \_uber-svc.1  nigelpoulton/ddd-book:web0.1   wrk1  Shutdown  Shutdown 13 secs
+bh...wa0  uber-svc.2    nigelpoulton/ddd-book:web0.1   wrk2  Running   Running 1 min
+e3...gr2  uber-svc.3    nigelpoulton/ddd-book:web0.2   wrk2  Running   Running 13 secs
+23...u97  \_uber-svc.3  nigelpoulton/ddd-book:web0.1   wrk2  Shutdown  Shutdown 13 secs
+82...5y1  uber-svc.4    nigelpoulton/ddd-book:web0.1   wrk2  Running   Running 1 min
+c3...gny  uber-svc.5    nigelpoulton/ddd-book:web0.1   wrk1  Running   Running 1 min
+e6...3u0  uber-svc.6    nigelpoulton/ddd-book:web0.1   wrk2  Running   Running 1 min
+78...r7z  uber-svc.7    nigelpoulton/ddd-book:web0.1   wrk1  Running   Running 1 min
+2m...kdz  uber-svc.8    nigelpoulton/ddd-book:web0.1   wrk2  Running   Running 1 min
+b9...k7w  uber-svc.9    nigelpoulton/ddd-book:web0.1   wrk1  Running   Running 1 min
+ag...v16  uber-svc.10   nigelpoulton/ddd-book:web0.1   wrk2  Running   Running 1 min
+e6...dfk  uber-svc.11   nigelpoulton/ddd-book:web0.1   wrk1  Running   Running 1 min
+e2...k1j  uber-svc.12   nigelpoulton/ddd-book:web0.1   wrk1  Running   Running 1 min
+~~~
+
+您可以通过打开 web 浏览器到端口 8080 上的任何群集节点并点击几次刷新来实时观察更新。有些请求将使用旧版本响应，有些将使用新版本响应。经过足够的时间后，所有请求都将检索新版本。
+
+祝贺你。您刚刚完成了一个实时容器化应用程序的零停机滚动更新。
+
+如果你运行 `docker service inspect --pretty` 命令，你会看到更新并行性和更新延迟设置已经合并到服务的定义中。这意味着未来的更新将自动使用这些设置，除非您在更新命令中覆盖它们。
+
+~~~shell
+$ docker service inspect --pretty uber-svc
+ID:             mub0dgtc8szm80ez5bs8wlt19
+Name:           uber-svc
+Service Mode:   Replicated
+ Replicas:      12
+<Snip>
+UpdateConfig:
+ Parallelism:   2					<<--------
+ Delay:         20s				<<--------
+ <Snip>
+~~~
+
+
+
+#### 服务日志
+
+您可以使用 `docker service logs` 命令查看服务日志。它从每个副本中收集日志，并在单个输出中显示它们。
+
+如果您一直遵循以上步骤，那么您将拥有一个名为 **uber-svc** 的服务，它将12个副本映射到每个集群节点上的端口8080。打开浏览器选项卡，指向端口8080上任意集群节点的IP地址，并刷新页面几次。
+
+运行 `docker service logs` 命令查看该服务生成的任何日志消息。
+
+~~~shell
+$ docker service logs uber-svc
+uber-svc.8.r33cra80eeut@wrk1	| {"level":"info","message":"/"}
+uber-svc.2.vid8et52oj48@wrk1	| {"level":"info","message":"/"}
+uber-svc.7.jv67x3zfkyar@wrk2	| {"level":"info","message":"/"}
+uber-svc.1.zlmvvo5k1i56@wrk2	| {"level":"info","message":"/"}
+uber-svc.3.kleeiy0vuue5@wrk2	| {"level":"info","message":"/"}
+~~~
+
+输出显示了5行与5个不同副本服务的5个请求相关的代码。
+
+每一行左边的长字符串是 Docker 通过连接服务名称、副本编号、副本ID和调度节点名称创建的副本的名称。下表映射了服务于请求的五个副本的名称。
+
+![](img/1737759294713.jpg)
+
+请注意，Swarm 是如何在五个不同的副本之间平衡请求的。在现实世界中，由于浏览器和不同的工具创建和处理请求的方式，您的请求可能不会像这样均衡。但是，如果刷新次数足够多，最终将看到请求由不同的副本提供服务。
+
+默认情况下，Docker 将服务配置为使用 json-file 日志驱动程序，但也存在其他驱动程序，包括：
+
+- awslogs
+- gelf
+- gcplogs
+- journald (only works on Linux hosts running systemd)
+- splunk
+- syslog
+
+**json-file** 和 journald 是最容易配置的，它们都使用 docker 服务日志命令。然而，其他驱动程序并不总是与本地 Docker 命令一起工作，你可能不得不使用日志平台的本地工具。
+
+下面的代码片段来自一个守护进程。配置为使用 **syslog** 驱动的 Docker 主机上的配置文件。这个 **daemon.json** 文件通常位于 /etc/- docker/daemon.json，但有时它不存在，除非您为自定义设置手动创建它。
+
+~~~json
+{
+  "log-driver": "syslog"
+}
+~~~
+
+您可以通过使用 `--log-driver`和 `--log-opts` 标志启动新服务来强制它们使用特定的日志驱动程序。这样做将覆盖 **daemon.json** 中设置的任何内容。
+
+服务日志期望应用程序作为 PID 1 运行，并将日志发送到 **STDOUT**，将错误发送到 **STDERR**。然后，日志驱动程序将日志转发到通过日志驱动程序配置的位置。
+
+可以运行 `docker service logs` 命令和 `--follow` 标志跟踪日志，`--tail` 跟踪他们，并且 `--details` 来获取额外信息。
+
+
+
+#### Docker Swarm 命令
+
+- **docker swarm init** 创建一个新的 swarm。运行该命令的节点将成为第一个管理器，该节点上的 Docker 引擎将切换到集群模式。
+- **docker swarm join-token** 显示将 worker 和 manager 加入 swarm 所需的命令和令牌。将 manager 添加到命令中以获取管理器连接令牌，并将worker添加到命令中以获取工作者令牌。确保您的连接令牌安全！
+- **docker node ls** 列出 managers 和 workers，包含哪一个是 manager 的 leader。
+
+- **docker service create** 创建一个新服务
+- **docker service ls** 列出运行服务并且提供有关其状态和正在运行的副本数量的基本信息。
+- **docker service ps <service>** 提供有关单个服务副本的更详细信息。
+- **docker service inspect** 提供有关服务的非常详细的信息。您可以添加 `--pretty` 标志来获得格式良好的摘要视图。
+
+- **docker service scale** 允许您扩展服务副本的数量。
+- **docker service update** 允许您更新正在运行的服务的属性。
+- **docker service logs** 展示服务日志。
+- **docker service rm** 删除服务而不要求确认。
+
+
+
+## 第十一章 使用 Docker Stacks 部署服务
+
+大规模部署和管理云原生微服务应用程序非常困难。幸运的是，Docker Stacks 可以提供帮助。
+
+我将这一章分成如下内容：
+
+- Deploying apps with Docker Stacks
+- 构建 Swarm lab
+- 示例 app
+- 部署 app
+- 管理 app
+
+### 使用 Docker Stacks 部署服务
+
+Docker Stacks 结合了Compose 和 Swarm，创建了一个平台，可以在安全、高可用的基础设施上轻松部署和管理复杂的**多容器**应用程序。
+
+你构建一个 swarm，在 Compose 文件中定义你的应用，然后部署和管理他们使用 `docker stack` 命令。
+
+在一个架构视角，stacks 位于 Docker 应用程序层次结构的顶端 —— 它们构建在服务之上，而服务又构建在容器之上，它们只运行在 swarms 上。
+
+<img src="img/1737881025383.jpg" style="zoom:67%;" />
+
+如果你一直在跟随，你已经知道了 Compose 和 Swarm，并且发现 Docker Stacks 很容易。
+
+
+
+### 构建 Swarm lab (Swarm 实验室)
+
+~~~shell
+$ docker swarm init --advertise-addr 192.168.0.13:2377 --listen-addr 192.168.0.13:2377
+
+$ docker swarm join --token SWMTKN-1-54thzv99y0cbxinfm0m2zv21jcp4swdk6132oeyzbtyyfo09vk-2lgrg3uirl3azci8lk3w7edub 192.168.0.13:2377
+
+$ docker swarm join --token SWMTKN-1-54thzv99y0cbxinfm0m2zv21jcp4swdk6132oeyzbtyyfo09vk-2lgrg3uirl3azci8lk3w7edub 192.168.0.13:2377
+~~~
+
+本节向您展示如何使用一个 manager 和两个 worker 构建一个三节点 swarm lab。如果你已经有了 swarm，你可以跳到下一部分。
+
+您可以在Multipass、Play with Docker,或任何 Docker 环境中构建 lab。然而，我不建议使用 Docker Desktop，因为你只能得到一个集群节点。
+
+在将成为集群管理器的节点上运行以下命令。
+
+~~~shell
+$ docker swarm init
+Swarm initialized: current node (lhma...w4nn) is now a manager.
+<Snip>
+~~~
+
+复制输出中显示的 `docker swarm join` 命令，并将其粘贴到要作为 worker 连接的两个节点中。
+
+**Worker 1**
+
+```shell
+$ docker swarm join --token SWMTKN-1-2hl6...-...3lqg 172.31.40.192:2377
+This node joined a swarm as a worker.
+```
+
+**Worker 2**
+
+~~~shell
+$ docker swarm join --token SWMTKN-1-2hl6...-...3lqg 172.31.40.192:2377
+This node joined a swarm as a worker.
+~~~
+
+从您的管理节点运行以下命令，以确认集群初始化为一个管理器和两个工作器。
+
+~~~shell
+$ docker node ls                                              
+ID            HOSTNAME   STATUS     AVAILABILITY    MANAGER STATUS                                             
+lhm...4nn *   mgr1       Ready      Active          Leader                                     
+b74...gz3     wrk1       Ready      Active                                                  
+o9x...um8     wrk2       Ready      Active             
+~~~
+
+现在您已经有了一个 swarm lab，让我们来看看示例应用程序。
+
+
+
+### 应用示例
+
+图11.2 显示了我们将在本章其余部分使用的应用程序。它是一个多容器微服务应用，具有：
+
+- Two services (**web-fe** and **redis**)
+- An encrypted overlay network (**counter-net**)
+- A volume (**counter-vol**)
+- A published port (5001)
+
+<img src="img/1737884204092.jpg" style="zoom:67%;" />
+
+**术语**：在本章中，我们将使用术语 service 来指代管理集群上一个或多个相同容器的 Docker 服务对象。我们也将 Compose 文件称为 *stack file*，有时我们将应用程序称为 *stack*。
+
+如果你还没有这样做，登录到一个集群管理器，克隆这本书的GitHub仓库。
+
+~~~shell
+$ git clone https://github.com/nigelpoulton/ddd-book.git
+Cloning into 'ddd-book'...
+remote: Enumerating objects: 8904, done.
+remote: Counting objects: 100% (74/74), done.
+remote: Compressing objects: 100% (52/52), done.
+remote: Total 8904 (delta 21), reused 70 (delta 18), pack-reused 8830
+Receiving objects: 100% (8904/8904), 74.00 MiB | 4.18 MiB/s, done.
+Resolving deltas: 100% (1378/1378), done.
+~~~
+
+改变目录地址到 **ddd-book/swarm-app** 文件夹。
+
+~~~shell
+$ cd ddd-book/swarm-app
+~~~
+
+您可以随意查看 app 子文件夹中的应用程序，但我们将重点关注 **compose.yaml** 文件。
+
+如果查看 Compose 文件，您将看到它有三个顶级键。
+
+- networks
+- volumes
+- services
+
+**网络**是你定义应用程序需要的网络，**卷**定义应用程序需要的卷，**服务**定义组成应用程序的微服务。该文件是基础设施作为代码的一个简单示例 —— 应用程序及其基础设施在配置文件中定义，您可以从配置文件中部署和管理它们。
+
+如果展开每个顶级键，您将看到如何使用一个名为 **counter-net** 的网络、一个名为 **counter-vol** 的卷和两个名为 **web- fe** 和 **redis** 的服务映射到图11.2。
+
+~~~yaml
+networks:
+  counter-net:
+volumes:
+  counter-vol:
+services:
+  web-fe:
+	redis:
+~~~
+
+让我们来看看 *stack file* 文件的每个部分。
+
+
+
+#### 仔细查看 stack file
+
+stack file 与 compose 文件相同，但在运行时略有不同。例如，Docker Compose 允许您在运行时构建映像，但 Docker Stacks 不允许。
+
+让我们看一下 *stack file* 中定义的网络元素。
+
+**Networks and networking**
+
+当你从 *stack file* 文件部署应用程序时，Docker 做的第一件事就是创建 **networks** 键下列出的网络。如果它们已经存在，Docker 不需要做任何事情。但如果它们不存在，它就会创造它们。
+
+这个应用程序定义了一个单一的加密覆盖网络，称为反网络。
+
+~~~yaml
+networks:
+  counter-net:							<<---- 网络名称
+    driver: overlay					<<---- 网络驱动或类型
+    driver_opts:
+      encrypted: 'yes'			<<---- 加密数据平面
+~~~
+
+它需要是一个覆盖网络，这样它就可以跨越群中的所有节点。
+
+对数据平面进行加密将使应用程序流量保持私有，但它会导致性能损失，这种损失会根据流量类型和流量流等因素而有所不同。性能损失在10%左右的情况并不少见，但是您应该针对自己的应用程序执行自己的测试。
+
+stack 还在集群范围内的入口网络的 5001 端口上发布 web-fe 服务，并将其映射回所有服务副本上的 8080 端口。这允许外部客户端通过访问端口 5001 上的任何集群节点来访问该服务。
+
+~~~yaml
+services:
+  web-fe:
+  <Snip>
+    ports:
+      - target: 8080				<<---- 服务副本在此端口侦听
+        published: 5001			<<---- 并在这个端口对外发布
+~~~
+
+**Volumes and mounts**
+
+该应用程序定义了一个名为 **counter-vol** 的卷，并将其挂载到所有 **web-fe** 副本的 **/app** 目录中。这意味着所有对 **/app** 文件夹的读写都将被读写到卷中。
+
+~~~yaml
+volumes:
+  counter-vol:										<<---- Volume name
+
+services:
+  web-fe:
+    <Snip>
+    volumes:
+      - type: volume
+        source: counter-vol				<<---- Mount the "counter-vol" volume to
+        target: /app							<<---- "/app" in all service replicas
+~~~
+
+**Services**
+
+服务是大多数活动发生的地方。我们的应用程序定义了两个，我们将依次查看它们。
+
+**The web-fe service**
+
+正如您所看到的，**web-fe** 服务定义了一个 image、一个 app、所需的副本数量、更新应用程序的规则、重启策略、要连接的网络、要发布的端口以及如何挂载卷。这有很多要理解的，所以我在书里做了注解。花一分钟时间通读文件和注释。
+
+~~~yaml
+services:
+  web-fe:
+    image: nigelpoulton/ddd-book:swarm-app		<<---- Create all replicas with this image
+    command: python app.py										<<---- Run this command when each replica starts
+    deploy:
+      replicas: 4											<<---- Deploy 4 replicas
+      update_config:									------┐ When you perform an update,
+        parallelism: 2											| update 2 replicas at a time,
+        delay: 10s										      | wait 10 seconds in between each set of two replicas
+        failure_action: rollback		 	------┘ and perform a rollback if you encounter issues
+      placement:											------┐
+        constraints:									      | Only run replicas on worker nodes
+          - 'node.role == worker'			------┘
+      restart_policy:									------┐ Only restart replicas if
+        condition: on-failure					      | they've failed (non-zero return code),
+        delay: 5s											      | wait five seconds between each restart attempt,
+        max_attempts: 3								      | only try three restarts,
+        window: 120s									------┘ and give up trying after two minutes
+    networks:
+      - counter-net										<<---- Connect replicas to the "counter-net" network
+    ports:
+      - published: 5001								------┐ Publish the service externally on port 5001 and
+        target: 8080									------┘ map traffic to each replica on port 8080
+    volumes:
+      - type: volume
+        source: counter-vol						------┐ Mount the "counter-vol" volume to
+        target: /app									------┘ "/app" in each service replica
+~~~
+
+镜像键是唯一的强制键，它告诉 Docker 在创建服务副本时使用哪个 image。swarm stacks 在部署时不支持构建映像，因此在部署应用程序之前必须存在映像。Docker 也很固执，假设你想从 Docker Hub 中提取图像。但是，如果希望使用第三方注册表，可以在映像名称之前添加注册表的 DNS 名称。例如，添加 ghcr.io 在映像名称之前，将从 GitHub Container Registry 中拉出它。
+
+**comand** 告诉 Docker 如何在每个副本中启动应用程序。我们的示例告诉它在副本中执行 `python app.py` 。
+
+`deploy.replicas` 告诉 Swarm 部署和管理四个服务副本（相同的容器）。
+
+~~~yaml
+web-fe:
+  deploy:
+		replicas: 4
+~~~
+
+如果在部署服务之后需要更改副本的数量，则应该更新 **deploy.replicas** 堆栈文件中的副本，然后重新部署 stack。我们稍后会看到。
+
+`deploy.update_config` 块告诉 Docker 如何执行 rollout。
+
+~~~yaml
+web-fe:
+  deploy:
+    update_config:
+      parallelism: 2
+      delay: 10s
+      failure_action: rollback
+~~~
+
+这个应用程序告诉 Docker 一次更新两个副本，每两个副本之间等待10秒，如果遇到任何问题，则执行回滚。
+
+回滚用旧版本的新副本替换新副本。**failure_action** 的默认值是 **pause**，它将暂停当前的更新，并可能导致一些副本运行旧版本，而另一些副本运行新版本。另一个选择是 **continue**。
+
+**deploy.placement** 将所有副本强制放到工作节点上。如果你运行一个单独节点集群，只有一个 manager 和 零个 worker，你讲需要删除这块内容的配置。
+
+~~~shell
+web-fe:
+  deploy:
+    placement:
+      constraints:
+        - 'node.role == worker'
+~~~
+
+**deploy.restart_policy** 告诉 Docker 在 rollout 过程中遇到故障时该怎么做。
+
+~~~shell
+web-fe:
+  deploy:
+    restart_policy:
+      condition: on-failure
+      max_attempts: 3
+      delay: 5s
+      window: 120s
+~~~
+
+这个应用程序告诉 Docker 在副本失败时重新启动，尝试最多3次重启，每次重启之间等待5秒，并等待最多120秒来决定重启是否成功。
+
+**networks** 告诉 Docker 将所有副本连接到 **counter-net** 网络。
+
+~~~yaml
+web-fe:
+  networks:
+    - counter-net
+~~~
+
+**ports** 在入网的 5001 端口和反网的 8080 端口上发布应用程序。这意味着外部流量可以命令任何 swarm 节点在 5001 端口，并且重定向到服务副本的 8080 端口。
+
+~~~yaml
+web-fe:
+  ports:
+    - published: 5001
+      target: 8080
+~~~
+
+**volumes** 将 **counter-vol** 卷挂载到每个服务副本的 **/app** 目录。
+
+~~~yaml
+web-fe:
+  volumes:
+    - type: volume
+      source: counter-vol
+      target: /app
+~~~
+
+
+
+**The redis service**
+
+**redis** 服务要简单得多。它提取 **redis:alpine** 映像，启动一个副本，并将其附加到 **counter-net** 网络。这是与 **web-fe** 服务相同的网络，这意味着这两个服务将能够通过名称（“redis”和“web-fe”）相互通信。
+
+~~~yaml
+redis:
+  image: "redis:alpine"
+  networks:
+    counter-net:
+~~~
+
+如前所述，compose 文件是应用程序文档的重要来源。我们可以读取该文件并知道应用程序有两个服务、两个网络和一个卷。我们知道服务如何通信，它们如何在集群外发布，以及如何部署、更新和从故障中重新启动它们。
+
+
+
+### 部署 app
+
+你可以使用 `docker stack deploy` 命令来部署 stacks，并且在其基本格式中，它接受两个参数：
+
+- The name of the stack file (Compose file)
+- The name of the stack (app)
+
+我们将使用 **compose.yaml** 文件在 **ddd-book/swarm-app** 文件夹，并且我们将会称它为应用 **ddd**。
+
+在 warm manager 的 swarm-app 目录下运行以下所有命令。
+
+部署 stack。
+
+~~~shell
+$ docker stack deploy -c compose.yaml ddd
+Since --detach=false was not specified, tasks will be created in the background.
+In a future release, --detach=false will become the default.
+Creating network ddd_counter-net
+Creating service ddd_web-fe
+Creating service ddd_redis
+[node1] (local) root@192.168.0.13 ~/ddd-book/swarm-app
+~~~
+
+输出中有几点需要注意。
+
+docker 创建网络和卷在 service 之前。这是因为 services 消费网络和卷，并且如果它们不存在，就无法启动。
+
+Docker 还为每个资源加上 stack 名称的前缀。我们称 stack 为 **ddd**， 这意味着 Docker 会在每个资源名前加上 ddd：
+
+- **ddd_counter-net**
+- **ddd_counter-vol**
+- **ddd_web-fe**
+- **ddd_redis**
+
+你可以使用常用的命令来检查服务、卷和网络的状态，但是 `docker stack` 命令也有几个检查 stack 状态的选项：
+
+- **docker stack ls** 打印正在运行的 stack 的列表以及它们有多少服务
+- **docker stack ps <stack-name>** 提供有关特定 stack 及其副本的更详细信息
+
+~~~shell
+$ docker stack ls
+NAME      SERVICES
+ddd       2
+~~~
+
+![](img/1737895034093.jpg)
+
+`docker stack ps` 命令非常适合用于故障排除服务。您可以看到每个副本所基于的映像、副本在哪些节点上运行、所需状态和当前状态。
+
+下面的输出显示了在 wrk2 节点上启动 web-fe 副本的两次失败尝试。
+
+~~~shell
+$ docker stack ps ddd
+NAME         NODE   DESIRED    CURRENT    ERROR             
+web-fe.1     wrk2   Shutdown   Failed     "task: non-zero exit (1)"          
+\_web-fe.1   wrk2   Shutdown   Failed     "task: non-zero exit (1)"       
+~~~
+
+`docker service logs` 命令检查服务日志。如果将服务名称或ID传递给它，您将获得所有服务副本的日志。如果向它传递一个特定的副本名称或ID，则只能获得该副本的日志。
+
+下面的示例显示了 **ddd_web-fe** 服务中所有副本的日志。
+
+~~~shell
+$ docker service logs ddd_web-fe
+ddd_web-fe.9.i23puo71kq12@node2     |  * Serving Flask app 'app'
+ddd_web-fe.5.z4otpnjrvc58@node2     |  * Debug mode: on
+<Snip>                              
+ddd_web-fe.6.novrixi5iuxy@node2     |  * Debug mode: on                                    
+ddd_web-fe.6.novrixi5iuxy@node2     |  * Debugger is active!         
+ddd_web-fe.6.novrixi5iuxy@node2     |  * Debugger PIN: 127-233-151
+~~~
+
+您可以跟踪日志（`--follow`），跟踪它们（`--tail`），有时还可以获得额外的详细信息（`--details`）。
+
+到目前为止，您已经使用Docker命令来证明 stack 已经启动并运行。但是，您也可以用浏览器进行测试。
+
+`docker stack service` 命令可以发现 **web-fe** 服务的发布端口
+
+~~~shell
+$ docker stack services ddd
+NAME         MODE         REPLICAS   IMAGE                              PORTS             
+ddd_redis    replicated   1/1        redis:alpine  
+ddd_web-fe   replicated   4/4        nigelpoulton/ddd-book:swarm-app    *:5001->8080/tcp
+~~~
+
+它发布在端口 5001 上，这意味着您可以将浏览器指向 5001 上任何集群节点的名称或IP。如果您使用 Multipass，节点 ip 通常以192.168 开头，您可以在主机终端上通过运行 `multipass list` 命令找到它们。也可以在虚拟机内部执行 ip a 命令，使用 enp0s1 接口的 ip 地址。
+
+![](img/1738467113262.jpg)
+
+
+
+### Managing the app
+
+两种方式管理 Docker stacks：
+
+- imperatively - 命令式
+- declaratively - 声明式
+
+命令式方法是你运行 Docker 命令对 stack 做变更。例如，使用 `docker service scale` 命令去增加或减少服务副本的数量。
+
+声明式方法是通过 stack file 来进行所有更改。例如，如果你想要修改服务副本数量，你修改 stack file 来改变期待的副本数量，运行另外 `docker stack deploy` 命令。
+
+声明性方法是首选方法。
+
+考虑下面的示例，该示例演示了为什么应该声明式地管理 stack。
+
+*假设您已经从一个 stack 文件部署了一个应用程序，其中包括一个 **reporting** 服务和一个 **catalog** 服务。stack 文件包括应用程序的其他服务，但我们只对这两个感兴趣。它目前运行五个报告服务副本，但年底报告已经开始，由于需求增加，它的性能缓慢。您决定运行一个命令式 `docker service scale` 命令，将报告副本的数量增加到10个。这修复了性能问题，但应用程序的当前状态与 stack 文件不同步—— stack 文件定义了5个副本，但集群运行了10个。当天晚些时候，一位同事的任务是推出新版本的目录服务 —— 目录服务是同一个应用程序的一部分，因此，与报告服务定义在同一个 stack 文件中。您的同事通过使用新版本的目录服务编辑堆栈文件并运行 docker stack 部署命令来推送更新，以声明式方式进行更改。当 Docker 接收到 stack 文件的更新版本时，它推出新版本的目录服务，并将报告副本的数量更改回 5 个。这将导致报告服务再次开始缓慢运行。*
+
+这就是为什么您应该通过 stack 文件声明式地进行所有更改，并在版本控制系统中对其进行管理。
+
+回到你部署的应用，让我们做以下事情：
+
+- 增长 **web-fe** 副本数量从 4 到 10。
+- 更新 **web-fe** 服务到最新的 **swarm-appv2** image。
+
+编辑 **compose.yaml** 文件，增加 **web-fe** 副本数量到 10，并修改 image 为 **swarm-appv2**。
+
+~~~yaml
+<Snip>
+services:
+  web-fe:
+    image: nigelpoulton/ddd-book:swarm-appv2		<<---- changed to swarm-appv2
+    command: python app.py
+    deploy:
+      replicas: 10															<<---- Changed from 4 to 10
+      <Snip>
+~~~
+
+保存你的修改并重新部署 app。这将会导致 Docker rollout 一个新版本的 **web-fe** 服务，同时所有 10 个副本都是根据最新的 image 运行。
+
+~~~shell
+$ docker stack deploy -c compose.yaml ddd
+Updating service ddd_redis (id: ozljsazuv7mmh14ep70pv43cf)
+Updating service ddd_web-fe (id: zbbplw0hul2gbr593mvwslz5i)
+~~~
+
+尽管看起来 Docker 已经重新部署了这两个服务，但实际上并没有。它足够聪明，只会重新部署您更改的部分。
+
+运行 `docker stack ps` 以查看 rollout 的进度。
+
+![](img/1738470260206.jpg)
+
+我对输出进行了删减以适应这本书，我只列出了一些复制品。但是，您可以看到一些东西。
+
+最上面一行显示了 **ddd_web-fe.1** 副本在过去8分钟内运行旧映像。
+
+接下来的两行显示了 **ddd_web-fe.2** 副本。您可以看到旧副本运行旧映像，在26秒前关闭，并被运行新映像的新版本所取代。新的复制品已经运行了13秒。
+
+最后一行显示了 **ddd_web-fe.3** 副本仍在运行旧版本。
+
+有两点需要强调：
+
+首先，Docker 遵循规则在 compose file 中的 **deploy.update_config** 部分。如果您再次查看该文件的该部分，您将看到 Docker 可以更新两个副本，等待10秒，更新下两个副本，等待10秒，然后如果遇到任何问题，尝试回滚到以前的版本。
+
+~~~yaml
+web-fe:
+  deploy:
+    update_config:
+      parallelism: 2
+      delay: 10s
+      failure_action: rollback
+~~~
+
+其次，容器是不可变的，Docker 不会更新现有的容器来运行新的镜像。它将它们删除并替换为运行新映像的新容器。
+
+一段时间后，所有10个副本都将运行更新后的映像。
+
+刷新你的浏览器，确保你看到了应用程序的更新版本，紫色的 **WebAssembly is the future** 的横幅。
+
+有些东西需要修复，因为它仍然显示旧的网页。
+
+问题在于 volume。让我们回顾一下发生了什么。
+
+新 image 有更新的应用程序版本，紫色的 **WebAssembly is the future** 的旗帜。这次发布删除了旧的副本，并用运行新版本应用程序的新副本取而代之。到目前为止，一切顺利。然而，当 Docker 启动每个新副本时，它会用旧的应用程序版本挂载旧的卷。这样做的效果是用旧版本覆盖新版本的应用程序。
+
+在处理 volume 时应该注意到这一点。但是，这通常是可以的，因为您通常只将卷用于数据存储，而不是用于托管应用程序二进制文件。
+
+假设您意识到 web-fe 服务是无状态的，并且不需要 volume。删除 volume 的声明式方法是再次编辑 Compose 文件，删除卷和卷挂载，然后重新部署应用程序。让我们这样做。
+
+编辑 **compose.yaml** 文件并作出如下更改：
+
+~~~yaml
+volumes:            <<---- Delete this line
+  counter-vol:      <<---- Delete this line
+<Snip>
+services:
+	web-fe:
+		image: nigelpoulton/ddd-book:swarm-appv2
+  	<Snip>
+  	volumes:												<<---- Delete this line
+  		- type: volume								<<---- Delete this line
+  			source: counter-vol					<<---- Delete this line
+  			target: /app								<<---- Delete this line
+~~~
+
+保存你的变动并重新部署。
+
+~~~shell
+$ docker stack deploy -c compose.yaml ddd
+Updating service ddd_redis (id: ozljsazuv7mmh14ep70pv43cf)
+Updating service ddd_web-fe (id: zbbplw0hul2gbr593mvwslz5i)
+~~~
+
+stack 将一次更新两个副本，每个副本之间等待10秒。一旦 stack 融合并更新了所有副本，您应该看到新版本的应用程序，如图11.4所示。刷新你的浏览器几次，以确保它的工作。如果一些请求在推出过程中得到旧版本，不要担心。
+
+![](img/1738471149151.jpg)
+
+volume 仍然存在，您需要手动删除它。
+
+祝贺你。你已经使用 Docker Stacks 成功地部署和管理了一个多容器应用程序。您还学习了通过堆栈文件（Compose file）进行所有更改来声明式地部署和管理应用程序。
+
+
+
+### Clean up
+
+您可以使用 `docker stack rm` 命令删除 stack。但是，需要注意的是，它删除堆栈时不需要请求确认。
+
+~~~shell
+$ docker stack rm ddd
+Removing service ddd_redis
+Removing service ddd_web-fe
+Removing network ddd_counter-net
+~~~
+
+该命令删除的是网络和服务，而不是 volume。这是因为 volume 生命周期与容器和服务解耦，您需要手动删除它们。
+
+在每个承载副本的集群节点上运行以下命令。
+
+~~~shell
+$ docker volume rm ddd_counter-vol
+ddd_counter-vol
+~~~
+
+
+
+### Deploying apps with Docker Stacks 命令
+
+- **docker stack deploy** is the command you’ll run to deploy **and** update stacks. You need to specify the name of the stack and the stack file. Docker expects the stack filetobecalled**compose.yaml**bydefault.**docker stack ls**listsallstacksona swarm and shows the number of services each one has.
+
+- **docker stack ps** gives you detailed information about a stack. It tells you which nodes replicas are running on, which images they’re based on, and shows the *desired state* and *current state* of each service replica.
+
+- **docker stack rm** deletes a stack and doesn’t ask for confirmation.
+
+
+
+
+
+## 第十二章 Docker and WebAssembly
+
+WebAssembly 正在推动云计算的第三次发展，Docker 正在不断发展以利用这一优势。
+
+我们在虚拟机（vm）上构建了第一波，在容器上构建了第二波，我们正在 WebAssembly 上构建第三波。
+
+![](img/1739097201670.jpg)
+
+在本章中，您将编写一个简单的 WebAssembly 应用程序，并使用 Docker 将其容器化并在容器中运行。目的是向您介绍 WebAssembly，并向您展示如何轻松地使用 Docker 和 WebAssembly。
+
+术语 WebAssembly 和 Wasm 意思相同，我们将使用术语Wasm。
+
+- Pre-reqs
+- Intro to Wasm
+- Write a Wasm app
+- Containerize a Wasm app
+- Deploy a Wasm app
+
+
+
+### 前期准备
+
+如果你打算继续下去，你需要以下所有的东西：
+
+- Docker Desktop **4.30+** with Wasm enabled
+- Rust 1.72+ with the Wasm target installed
+- Spin 2.5+
+
+在撰写本文时，对 Wasm 的支持是 Docker Desktop 的一个测试版特性，并不适用于 Multipass Docker VMs。这在未来可能会改变。这也意味着存在更高的漏洞风险。我已经在 Docker Desktop 4.30.0 上测试了本章中的示例。
+
+
+
+#### Configure Docker Desktop for Wasm
+
+![](img/1739098627079.jpg)
+
+#### 安装 Rust 并配置 Wasm
+
+在网上搜索如何安装 Rust，并按照您的平台的说明进行操作。
+
+安装 Rust 之后，运行以下命令安装 wasm32-wasi target 以便 Rust 可以编译成Wasm。
+
+~~~shell
+$ rustup target add wasm32-wasi
+info: downloading component 'rust-std' for 'wasm32-wasi'
+info: installing component 'rust-std' for 'wasm32-wasi'
+~~~
+
+
+
+#### 安装 Spin
+
+Spin 是一个 Wasm 框架和运行时，它使构建和运行 Wasm 应用程序变得容易。
+
+运行以下命令以确保正确安装。
+
+~~~shell
+$ spin --version
+spin 2.5.0 (83eb68d 2024-05-08)
+~~~
+
+
+
+### Wasm 和 Wasm 容器简介
+
+Wasm是一种新型的应用程序，它比传统的 Linux 容器更小、更快、更可移植。然而，传统的 Linux 容器可以比 Wasm 应用程序做更多的事情。例如，Wasm 应用程序目前非常适合人工智能工作负载、无服务器功能、插件和边缘设备，但不太适合复杂的网络或繁重的I/O。
+
+然而，Wasm 正在快速发展，将来可能会在其他工作负载上变得更好。
+
+正如我们即将看到的，Wasm 是一种新的虚拟机架构，编程语言可以编译到它上面。所以，不是将应用程序编译到 ARM 或 AMD 上的Linux 上，而是将它们编译到 Wasm 上。然后，您可以在任何具有 Wasm 运行时的系统上运行这些 Wasm 应用程序。幸运的是，Docker Desktop 已经附带了几个 Wasm 运行时。
+
+运行以下命令查看安装在 Docker Desktop 环境中的 Wasm 运行时列表。第一次运行该命令时，它将下载映像。
+
+~~~shell
+$ docker run --rm -i --privileged --pid=host jorgeprendes420/docker-desktop-shim-manager:latest
+io.containerd.wasmtime.v1
+io.containerd.spin.v2
+io.containerd.wws.v1
+io.containerd.lunatic.v1
+io.containerd.slight.v1
+io.containerd.wasmedge.v1
+io.containerd.wasmer.v1
+~~~
+
+我的安装有 7 个 Wasm 运行时，包括使用的示例 **io.containerd.spin.v2** 运行时。
+
+这些 Wasm 运行时允许容器化部署和管理 Wasm 容器。
+
+
+
+## 第十三章 Docker Networking
 
 
 
