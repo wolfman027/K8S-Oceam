@@ -4337,19 +4337,313 @@ io.containerd.wasmer.v1
 
 ## 第十三章 Docker Networking
 
+对于有很强的理解 Docker 网络是很重要的。
+
+### Docker Networking
+
+Docker 运行由许多容器组成的微服务应用程序，这些容器一起工作以形成整个应用程序。这些容器需要能够通信，有些容器必须与外部服务（如物理服务器、虚拟机或其他东西）连接。
+
+Docker 网络是基于 *libnetwork* 的，*libnetwork* 是 Docker 的参考实现称为容器网络模型（Container Network Model， CNM）的开源架构。
+
+为了获得流畅的开箱即用体验，Docker 提供了最常见的网络需求所需的一切，包括多主机容器到容器网络和插入现有vlan的选项。
+
+然而，该模型是可插拔的，生态系统可以通过插入 libnetwork 的驱动程序扩展 Docker 的网络功能。
+
+*libnetwork* 还提供本机服务发现和基本负载平衡。
 
 
 
+### Docker networking theory
+
+在最高层次上，Docker 网络是基于以下三个组件：
+
+- The Container Network Model (CNM)
+- Libnetwork
+- Drivers
+
+**CNM** 是**设计规范**，概述了 Docker 网络的基本构建模块。
+
+**Libnetwork** 是 CNM 的实际实现。作为 Moby 项目的一部分，它是开源的，并被 Docker 和其他平台使用。
+
+**驱动程序**通过实现特定的网络拓扑（如 VXLAN 覆盖网络）来扩展模型。
+
+<img src="img/1739140314255.jpg" style="zoom:50%;" />
+
+#### The Container Network Model (CNM)
+
+Docker 网络的设计指南是 CNM，它概述了 Docker 网络的基本构建块。
+
+我建议您阅读规范文档，但在高层次上，它定义了三个构建块：
+
+- Sandboxes
+- Endpoints
+- Networks
+
+**Sandboxes** 是容器内的隔离网络堆栈。它包括以太网接口、端口、路由表、DNS配置以及您期望从网络堆栈中获得的所有其他内容。
+
+**Endpoints** 是虚拟网络接口，其外观、气味和感觉都与常规网络接口相似。他们把 Sandboxes 和 Networks 连接起来。
+
+**Networks** 是虚拟交换机（通常是 802.1d 网桥的软件实现）。因此，它们组合在一起并隔离一个或多个需要通信的端点。
+
+图13.2 显示了这三个组件如何连接并关联到熟悉的基础设施组件。使用 CNM 术语，端点将 Sandboxes 连接到 Networks。您创建的每个容器都有一个 sandbox，至少有一个 endpoint 将其连接到 network。
+
+<img src="img/1739140836087.jpg" style="zoom:67%;" />
+
+顾名思义，容器网络模型就是为容器提供网络。
+
+图13.3 显示了 CNM 组件与容器的关系 —— 每个容器都有自己的 sandbox，它承载着容器的整个网络堆栈，包括一个或多个 endpoint 充当以太网接口并可以连接网络。
+
+<img src="img/1739141130342.jpg" style="zoom:47%;" />
+
+container A 只有一个接口（endpoint），并且只连接到 network A。然而，Container B 有两个接口连接 Network A 和 Network B。容器之间可以沟通，因为他们都连接 Network A。但是，Container B 内部的两个端点无法相互通信，因为它们位于不同的网络上。
+
+同样重要的是要理解 endpoint 的行为与常规网络适配器完全相同，这意味着您只能将它们连接到单个网络。这就是为什么 Container B 需要两个端点，如果它想连接到两个网络。
+
+图13.4 通过添加 Docker 主机进一步扩展了这个图。尽管这一次两个容器运行在同一台主机上，但它们的网络堆栈是完全隔离的，只能通过网络进行通信。
+
+<img src="img/1739141559685.jpg" style="zoom:50%;" />
+
+#### Libnetwork
+
+Libnetwork 是 CNM 的参考实现。它是开源的，跨平台的（Linux和Windows），由 Moby 项目维护，并由 Docker 使用。
+
+在 Docker 创建 libnetwork 之前，它在守护进程中实现了所有的网络代码。然而，随着时间的推移，守护进程变得臃肿，其他项目难以使用。因此，Docker 从守护进程中删除了网络代码，并将其重构为一个基于 CNM 设计的名为 *libnetwork* 的外部库。今天，Docker 在*libnetwork* 中实现了它所有的核心网络。
+
+除了实现 CNM 的核心组件外，libnetwork 还实现了网络控制平面，包括管理 APIs、服务发现和基于入口的容器负载平衡。
 
 
 
+#### Drivers
+
+Libnetwork 实现了控制平面，但它依赖于驱动程序来实现数据平面。例如，驱动程序负责创建网络并确保隔离和连接。
+
+Docker 附带了几个内置驱动程序，我们有时称之为 *native drivers* 或 *local drivers*。这些包括桥接、覆盖和 macvlan，它们构建了最常见的网络拓扑结构。第三方也可以编写网络驱动程序来实现其他网络拓扑和更高级的配置。
+
+图13.5 显示了 libnetwork 和 drivers 的角色，以及它们与控制平面和数据位置职责的关系。
+
+ <img src="img/1739157972609.jpg" style="zoom:50%;" />
+
+您创建的每个网络都由驱动程序拥有，并且驱动程序创建和管理有关网络的所有内容。例如，如果你创建了一个名为 prod-fe-cuda 的覆盖网络，Docker 将调用覆盖驱动程序来创建网络及其资源。
+
+为了满足复杂、高流动性环境的需求，单个 Docker 主机或 Swarm 集群可以拥有由不同驱动程序管理的多个异构网络。
 
 
 
+### Single-host bridge networks 单主机桥接网络
+
+Docker 网络最简单的类型是：*single-host bridge network*。
+
+名字告诉我们两个事情：
+
+- **Single-host** 告诉我们网络只跨越一个 Docker 主机
+- **Bridge** 告诉我们它是 802.1d 桥接（第二层交换机）的实现
+
+Docker 使用内置的桥接驱动程序创建单主机桥接网络。如果您运行 Windows 容器，则需要使用 nat 驱动程序，但出于所有意图和目的，它们的工作原理是相同的。
+
+图13.6 显示了具有相同本地桥接网络的两个 Docker 主机，都称为 mynet。尽管网络是相同的，但它们是独立和隔离的，这意味着图中的容器不能通信，即使节点是同一群的一部分。
+
+<img src="img/1739171187870.jpg" style="zoom:50%;" />
+
+每个新的 Docker 主机都有一个默认的单主机桥接网络，称为 bridge， Docker 将新容器连接到它，除非你用 --network 标志覆盖它。
+
+`docker network ls` 命令显示 Docker 安装时的网络。
+
+~~~shell
+$ docker network ls
+NETWORK ID     NAME      DRIVER    SCOPE
+b91db1ed10e8   bridge    bridge    local		<<---- Default on all Docker hosts
+31196b73b9e9   host      host      local
+4272a37f9eff   none      null      local
+~~~
+
+与往常一样，您可以运行 `docker inspect` 命令来获取更多信息。我强烈建议在您自己的系统上运行该命令并研究其输出。
+
+~~~shell
+$ docker network inspect bridge
+[
+    {
+        "Name": "bridge",
+        "Id": "b91db1ed10e8c839f8ca6813033af5029dce7bd017cfe56bb4e0f8dcdf608d99",
+        "Created": "2025-02-10T07:09:17.465950375Z",
+        "Scope": "local",
+        "Driver": "bridge",
+        "EnableIPv6": false,
+        "IPAM": {
+            "Driver": "default",
+            "Options": null,
+            "Config": [
+                {
+                    "Subnet": "172.17.0.0/16",
+                    "Gateway": "172.17.0.1"
+                }
+            ]
+        },
+        "Internal": false,
+        "Attachable": false,
+        "Ingress": false,
+        "ConfigFrom": {
+            "Network": ""
+        },
+        "ConfigOnly": false,
+        "Containers": {
+            "fedb9b6a38201770348b96970a331e4b7538102e84b7e37b4b0e6297774064c2": {
+                "Name": "neversaydie",
+                "EndpointID": "6f8dfbb9ac2ede99c3d4997679439c51154059fdc39baa062c13cba801cc9a9b",
+                "MacAddress": "02:42:ac:11:00:02",
+                "IPv4Address": "172.17.0.2/16",
+                "IPv6Address": ""
+            }
+        },
+        "Options": {
+            "com.docker.network.bridge.default_bridge": "true",
+            "com.docker.network.bridge.enable_icc": "true",
+            "com.docker.network.bridge.enable_ip_masquerade": "true",
+            "com.docker.network.bridge.host_binding_ipv4": "0.0.0.0",
+            "com.docker.network.bridge.name": "docker0",
+            "com.docker.network.driver.mtu": "65535"
+        },
+        "Labels": {}
+    }
+]
+~~~
+
+所有桥接网络都基于久经考验的 Linux 桥接技术，该技术已经在 Linux 内核中存在了20多年。这意味着它们是高性能和高度稳定的。这也意味着您可以使用标准的 Linux 实用程序检查它们。
+
+所有基于 Linux 的 Docker 主机上的默认网桥网络称为 bridge，并映射到主机内核中称为 docker0 的底层 Linux 网桥。如图13.7所示。
+
+<img src="img/1739171648124.jpg" style="zoom:50%;" />
+
+可以通过 `docker network inspect` 命令确认网桥网络是否基于主机内核中的 docker0 网桥。如果您在 Windows 上使用Power-Shell，则需要将 grep 替换为 SelectString。
+
+~~~shell
+$ docker network inspect bridge | grep bridge.name  
+          "com.docker.network.bridge.name": "docker0",
+~~~
+
+现在运行这些 Linux 命令，从 Linux 主机检查 docker 0 桥。
+
+您可能需要手动安装 **brctl** 实用程序。
+
+~~~shell
+$ brctl show
+bridge name 		bridge id 					STP 	enabled 	interfaces
+docker0 				8000.0242aff9eb4f 	no
+docker_gwbridge 8000.02427abba76b 	no
+
+$ ip link show docker0
+3: docker0: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc...
+link/ether 02:42:af:f9:eb:4f brd ff:ff:ff:ff:ff:ff
+~~~
+
+第一个命令列出 Docker 主机上的所有桥接器，并显示它们是否有任何设备连接到它们。书中的示例显示了没有设备连接的 docker0 桥接。只有当您的主机是集群集群的成员时，您才会看到 docker_gwbridge。
+
+第二个命令显示 docker0 桥的配置和状态。
+
+图13.8 显示了连接到网桥网络的容器的完整堆栈，它依次映射到主机内核中的 docker0 Linux网桥。它还展示了如何使用端口映射在Docker 主机的接口上发布连接的设备。稍后将详细介绍端口映射。
+
+<img src="img/1739174365362.jpg" style="zoom:87%;" />
+
+在接下来的几个步骤中，您将完成以下所有操作：
+
+- 创建一个新的 Docker 桥接网络
+- 连接一个容器到新的网络
+- 检查新的网络
+- 基于测试名称的发现
+
+运行以下命令创建一个名为 **localnet** 的新的单主机桥接网络。
+
+~~~shell
+$ docker network create -d bridge localnet
+f918f1bb0602373bf949615d99cb2bbbef14ede935fbb2ff8e83c74f10e4b986
+~~~
+
+命令返回的长数字是网络的 ID，您将在下一个步骤。
+
+正如预期的那样，该命令创建了一个名为 **localnet** 的新的 Docker 桥接网络，您可以使用通常的 Docker 命令列出并检查该网络。但是，在幕后，它还在主机内核中创建了一个新的 Linux 桥接。
+
+~~~shell
+$ brctl show
+bridge name 				bridge id 						STP 		enabled interfaces
+br-f918f1bb0602 		8000.0242372a886b 		no
+docker0 						8000.024258ee84bc 		no
+docker_gwbridge 		8000.02427abba76b 		no
+~~~
+
+书中的示例显示了一个名为 **br-f918f1bb0602** 的新桥，没有连接任何设备。如果仔细观察这个名称，就会发现 **f918f1bb0602** 是刚刚创建的新本地网络的ID的前12个字符。
+
+此时，主机上的网桥配置如图13.9 所示，在主机的内核中有三个 Docker 网络和三个相关的网桥。
+
+<img src="img/1739175343007.jpg" style="zoom:80%;" />
+
+让我们创建一个名为 c1 的新容器，并将其连接到新的 **localnet** 网络桥接网络。
+
+~~~shell
+$ docker run -d --name c1 --network localnet alpine sleep 1d
+~~~
+
+创建容器之后，检查本地网络并验证容器是否连接到该网络。您需要安装jq实用程序才能使该命令工作。如果它不起作用，请删除 `| jq`。
+
+~~~shell
+$ docker network inspect localnet --format '{{json .Containers}}' | jq
+{
+  "caa3f47c97434b60c573eb272d1581a41e009e37d89af53425948c4159bf470b": {
+    "Name": "c1",
+    "EndpointID": "8cda204804538de701af111944e286a733725a0b95a147bb965fc28605457e80",
+    "MacAddress": "02:42:ac:12:00:02",
+    "IPv4Address": "172.18.0.2/16",
+    "IPv6Address": ""
+  }
+}
+~~~
+
+输出显示 c1 容器及其 IP 地址。这证明 Docker 将它连接到网络。
+
+如果运行另一个 `brctl show` 命令，您将看到 **c1** 容器的接口连接到 **br-1597657726bc** 桥。
+
+~~~shell
+$ brctl show
+bridge name 			bridge id 					STP 	enabled 	interfaces
+br-f918f1bb0602 	8000.0242372a886b 	no 							veth833aaf9
+docker0 					8000.024258ee84bc 	no
+docker_gwbridge 	8000.02427abba76b 	no
+~~~
+
+图13.10 显示了更新后的配置。您的虚拟id 会有所不同，但重要的是要理解每个虚拟就像两端都有接口的电缆。一端连接到 Docker 网络，另一端连接到内核中相关的 bridge。
+
+![](img/1739175903173.jpg)
+
+如果向 **localnet** 网络添加更多容器，它们都可以使用名称进行通信。这是因为 Docker 自动向内部 DNS 服务注册容器名称，并允许同一网络上的容器通过名称查找彼此。这个规则的例外是内置网桥网络，它不支持DNS解析。
+
+让我们通过在相同的本地网络上创建一个名为 **c2** 的新容器来测试名称解析，并查看它是否可以 ping 通 **c1** 容器。
+
+运行以下命令在 **localnet** 网络上创建 **c2** 容器。如果您仍然登录到 **c1** 容器，则需要键入 exit。
+
+~~~shell
+$ docker run -it --name c2 --network localnet alpine sh
+~~~
+
+您的终端将切换到 **c2** 容器。
+
+尝试通过名称 ping c1 容器。
+
+~~~shell
+$ docker exec -it c2 /bin/sh
+
+$ ping c1
+PING c1 (172.21.0.2): 56 data bytes
+64 bytes from 172.21.0.2: seq=0 ttl=64 time=1.564 ms
+64 bytes from 172.21.0.2: seq=1 ttl=64 time=0.338 ms
+64 bytes from 172.21.0.2: seq=2 ttl=64 time=0.248 ms
+<Control-c>
+~~~
+
+它的工作原理！这是因为所有容器都运行一个 DNS 解析器，它将名称查找转发到 Docker 的内部 DNS 服务器，该服务器保存所有以 --name 或 --net-alias标志开头的容器的名称到 ip 映射。
+
+键入 exit 退出容器并返回到本地 shell。
 
 
 
-
+### 通过端口映射进行外部访问
 
 
 
