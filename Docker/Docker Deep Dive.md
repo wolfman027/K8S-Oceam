@@ -4645,6 +4645,422 @@ PING c1 (172.21.0.2): 56 data bytes
 
 ### 通过端口映射进行外部访问
 
+到目前为止，我们已经说过桥接网络上的容器只能与同一网络上的其他容器通信。但是，您可以通过将容器映射到 Docker 主机上的端口来解决这个问题。它有点笨拙，并且有很多限制，但它可能对偶尔的测试和开发工作有用。
+
+图13.11 显示了运行两个容器的单个 Docker 主机。右边的 **web** 容器在端口 80 上运行 web 服务器，该端口映射到 Docker 主机的端口5005。左边的客户端容器正在向端口 5005 上的 Docker 主机发送请求，底部的外部客户端也在做同样的事情。两个请求都将到达端口5005 上的主机 IP，并被重定向到在 web 容器中运行的 web 服务器。
+
+<img src="img/1739226529383.jpg" style="zoom:80%;" />
+
+让我们测试这个设置，看看它是否有效。
+
+创建一个名为 **web** 的新容器，在端口 80 上运行 NGINX，并将其映射到端口 5005。
+
+~~~shell
+$ docker run -d --name web --network localnet --publish 5005:80 nginx
+~~~
+
+验证端口映射
+
+~~~shell
+$ docker port web
+80/tcp -> 0.0.0.0:5005
+80/tcp -> [::]:5005
+~~~
+
+输出结果显示 Docker 主机上所有接口都存在端口映射。
+
+你可以通过将web浏览器指向端口 5005 上的 Docker 主机来测试外部访问。您需要知道您的 Docker 主机的IP或DNS名称（如果您遵循Multipass，它可能是您的Multipass VM的192.168.x）。x地址)。你会看到 Welcome to nginx！页面。
+
+让我们创建另一个容器，看看它是否可以通过端口映射到达 **web** 容器。
+
+运行以下命令在网桥网络上创建一个名为 **client** 的新容器。
+
+~~~shell
+$ docker run -it --name client --network bridge alpine sh
+#
+~~~
+
+该命令将把您登录到容器中，您的提示符将发生变化。
+
+安装 curl 实用程序。
+
+~~~shell
+# apk add curl
+fetch https://dl-cdn.alpinelinux.org/alpine/v3.19/main/aarch64/APKINDEX.tar.gz
+fetch https://dl-cdn.alpinelinux.org/alpine/v3.19/community/aarch64/APKINDEX.tar.gz
+(1/8) Installing ca-certificates (20240226-r0)
+<Snip>
+~~~
+
+现在连接到端口 5005 上的 Docker 主机的 IP，看看是否可以到达容器。
+
+~~~shell
+# curl 192.168.64.69:5005
+<!DOCTYPE html>
+<html>
+<head>
+<title>Welcome to nginx!</title>
+...
+</html>
+~~~
+
+你已经通过一个端口映射到 Docker 主机的 IP 到达了运行在 **c1** 容器上的 NGINX web 服务器。
+
+尽管这种方法有效，但它很笨重，而且无法扩展。例如，没有其他容器或主机进程能够使用主机上的端口5005。这就是单主机桥接网络仅对本地开发或非常小的应用程序有用的原因之一。
+
+
+
+#### 连接到已经存在的网络或 VLANs
+
+将容器化应用程序连接到外部系统和物理网络的能力非常重要。一个常见的例子是部分容器化的应用程序，其中在容器中运行的部分需要能够与不在容器中运行的部分通信。
+
+内置的 **MACVLAN** 驱动程序（如果您使用的是Windows容器，则是透明的）就是这样创建的。它在外部物理网络上为每个容器提供自己的IP和MAC地址，使每个容器看起来、闻起来和感觉起来都像一个物理服务器或VM。如下图所示：
+
+<img src="img/1739227646300.jpg" style="zoom:80%;" />
+
+从积极的方面来看，MACVLAN 性能很好，因为它不需要端口映射或额外的桥。但是，您需要以 *promiscuous mode* 运行主机网卡，这在许多公司网络和公共云上是不允许的。因此，如果您的网络团队允许 *promiscuous mode*，MACVLAN将在您的数据中心网络上工作，但它可能无法在您的公共云上工作。
+
+让我们借助一些图片和一个假设的例子来深入研究一下。这个例子只在您的主机网卡在允许它的网络上处于混杂模式时才有效。它还需要一个现有的 VLAN 100。它还需要一个现有的 VLAN 100。如果物理网络上的 VLAN 配置不同，您可以调整它。您可以在没有vlan的情况下继续学习，但是您将无法获得完整的体验。
+
+假设您的网络如图13.13 所示，有两个 VLANs：
+
+![](img/1739227999408.jpg)
+
+接下来，添加一个 Docker 主机并将其连接到网络。
+
+![](img/1739228047923.jpg)
+
+现在需要将容器附加到 VLAN 100。要做到这一点，你需要用 **macvlan** 驱动程序创建一个新的 Docker 网络，并用以下所有内容配置它：
+
+- Subnet info
+- Gateway
+- Range of IPs it can assign to containers
+- Which of the host’s interfaces or sub-interfaces to use
+
+运行以下命令创建一个名为 **macvlan100** 的新 MACVLAN 网络，该网络将容器连接到 VLAN 100。您可能需要更改父接口的名称以匹配系统上的父接口名称。例如，将 `-o parent=eth0.100` 修改为 `-o parent=enp0s1.100`。父接口必须加入该VLAN；
+
+~~~shell
+$ docker network create -d macvlan \
+--subnet=10.0.0.0/24 \
+--ip-range=10.0.0.0/25 \
+--gateway=10.0.0.1 \
+-o parent=eth0.100 \ 						<<---- Make sure this matches your system
+macvlan100
+~~~
+
+Docker 将在主机上创建 **macvlan100** 网络和一个名为 **eth0.100@eth0** 的新子接口。配置现在看起来像这样。
+
+<img src="img/1739228410160.jpg" style="zoom:80%;" />
+
+MACVLAN 驱动程序创建标准的 Linux 子接口，并用它们要连接的 VLAN ID 标记它们。在本例中，我们连接到 VLAN 100，因此我们用 .100 （-o parent=eth0.100）标记子接口。
+
+我们还使用 `--IP-range` 标志来告诉新网络它可以分配给容器的IP地址子集。为 Docker 保留这个地址范围是至关重要的，因为MACVLAN 驱动程序没有管理平面功能来检查 ip 是否已经在使用中。
+
+如果您检查网络，您将能够看到重要的配置信息。我截取了输出以显示最相关的部分。
+
+~~~shell
+$ docker network inspect macvlan100
+[
+    {
+        "Name": "macvlan100",
+        "Driver": "macvlan",
+        "IPAM": {
+            "Config": [
+                {
+                    "Subnet": "10.0.0.0/24",
+                    "IPRange": "10.0.0.0/25",
+                    "Gateway": "10.0.0.1"
+                }
+            ]
+        },
+        "Options": {
+            "parent": "enp0s1.100"
+        },
+    }
+]
+~~~
+
+一旦创建了 **macvlan100** 网络，就可以将容器连接到它，Docker 将在底层 VLAN 上分配 IP 和 MAC 地址，这样其他系统就可以看到它们。
+
+下面的命令创建一个名为 **mactainer1** 的新容器，并将其连接到 **macvlan100** 网络。
+
+~~~shell
+$ docker run -d --name mactainer1 --network macvlan100 alpine sleep 1d
+~~~
+
+配置现在如图13.16 所示。
+
+<img src="img/1739236904149.jpg" style="zoom:80%;" />
+
+但是，请记住，底层网络（VLAN 100）看不到任何 MACVLAN 的魔力，它只看到带有 MAC 和 IP 地址的容器，**这意味着 mactainer1 容器将能够与连接到 VLAN 100 的所有其他系统通信！**
+
+**注意：**如果您不能使其工作，可能是因为您的主机网卡没有处于混杂模式。另外，请记住，公共云平台通常会阻止混杂模式。
+
+至此，您已经有了 **MACVLAN** 网络，并使用它将新容器连接到现有 **VLAN**。如果您有完整的设置，使用现有的 **VLAN**，您可以测试容器是否可以从 **VLAN** 上的其他系统访问。
+
+然而，它并不止于此。Docker MACVLAN 驱动支持 VLAN 集群。这意味着您可以创建连接到不同 vlan 的多个 MACVLAN 网络。图13.17显示了单个 Docker 主机运行两个 MACVLAN 网络，将容器连接到两个不同的 vlan。
+
+<img src="img/1739237885003.jpg" style="zoom:67%;" />
+
+
+
+#### 排除连接问题
+
+在继续进行服务发现之前，快速介绍一下如何排除连接问题。
+
+在排除连接问题时，守护进程日志和容器日志可能很有用。
+
+如果您正在运行 Windows 容器，您可以在 Windows 事件查看器中查看它们，也可以直接在 ~ \AppData\Local\Docker 中查看它们。
+
+对于 Linux 容器，这取决于您使用的初始化系统。如果你运行的是 systemd， Docker 会将日志发布到 journalctl，你可以使用 journalctl -u docker.service 查看它们。如果你使用不同的 init 系统，你可能需要检查以下位置：
+
+- Ubuntu systems running upstart: /var/log/upstart/docker.log
+- RHEL-based systems: /var/log/messages
+- Debian: /var/log/daemon.log
+
+您还可以告诉 Docker 您希望守护进程日志记录的详细程度。
+
+要做到这一点，编辑守护进程配置文件在 `/etc/docker/daemon.json`，将 **“debug”** 设置为 **“true”**，将 **“log-level”** 设置为以下选项之一：
+
+- **debug** – 最详细的选项
+- **info** – 默认值和第二详细的选项
+- **warn** – 第三个最冗长的选项
+- **error** – 第四个最冗长的选项
+- **fatal** – 最少详细选项
+
+下面的代码片段来自一个 deaemon.json 启用调试并将级别设置为调试。它将在所有 Docker 平台上工作。
+
+~~~json
+{
+	<Snip>
+	"debug":true,
+	"log-level":"debug",
+	<Snip>
+}
+~~~
+
+如果你的 deaemon.json 文件不存在，创建它。此外，确保在对文件进行任何更改后重新启动 Docker。
+
+那是守护进程日志。那么容器日志呢？
+
+您可以使用 `docker logs` 命令正常查看容器日志。如果你正在运行 Swarm，你应该使用 `docker service logs` 命令。然而，Docker 支持一些不同的日志驱动程序，它们并不都能与本地 Docker 命令一起工作。对于其中一些，您可能必须使用平台的本地工具查看日志。
+
+**json-file** 和 **journald** 可能是最容易配置的，它们都与 `docker logs` 和 `docker service logs` 命令一起工作。
+
+下面的代码片段来自一个 deamon.json 显示了一个配置为使用 journald 的 Docker 主机。
+
+~~~json
+{
+	"log-driver": "journald"
+}
+~~~
+
+你也可以用 `--log-driver` 和 `--log-opt` 标志来启动容器或服务，以覆盖 daemon.json 中的设置。
+
+容器日志工作的前提是应用程序作为 PID 1 运行，并将日志发送到 **STDOUT**，将错误发送到 **STDERR**。然后，日志驱动程序将所有内容转发到通过日志驱动程序配置的位置。
+
+下面是对一个名为 **vantage-db** 的容器运行 `docker logs` 命令的示例，该容器配置了 json-file 日志驱动程序。
+
+~~~shell
+$ docker logs vantage-db
+1:C 2 Feb 09:53:22.903 # oO0OoO0OoO0Oo Redis is starting oO0OoO0OoO0Oo
+1:C 2 Feb 09:53:22.904 # Redis version=4.0.6, bits=64, commit=00000000, modified=0, pid=1
+1:C 2 Feb 09:53:22.904 # Warning: no config file specified, using the default config.
+1:M 2 Feb 09:53:22.906 * Running mode=standalone, port=6379.
+1:M 2 Feb 09:53:22.906 # WARNING: The TCP backlog setting of 511 cannot be enforced...
+1:M 2 Feb 09:53:22.906 # Server initialized
+1:M 2 Feb 09:53:22.906 # WARNING overcommit_memory is set to 0!
+~~~
+
+
+
+#### 服务发现
+
+除了核心网络，*libnetwork* 还提供服务发现，允许所有容器和 Swarm 服务通过名称相互定位。唯一的要求是容器在同一个网络上。
+
+在底层，Docker实现了一个本地DNS服务器，并配置每个容器使用它进行名称解析。
+
+图13.18 显示了一个名为 **c1** 的容器通过名称 ping 另一个名为 **c2** 的容器。同样的原则也适用于 Swarm 服务副本。
+
+<img src="img/1739244117957.jpg" style="zoom:67%;" />
+
+让我们逐步了解这个过程。
+
+- 第一步：c1 容器发出 `ping c2` 命令。容器的本地 DNS 解析器检查它的缓存，看看它是否有c2的IP地址。所有 Docker 容器都有一个本地DNS解析器。
+- 第二步：本地解析器没有 c2 的 IP 地址，因此它向嵌入式 Docker DNS 服务器发起递归查询。所有 Docker 容器都预先配置为知道如何向嵌入式 DNS 服务器发送查询。
+- 第三步：Docker DNS 服务器为你用 `--name` 或 `--net-alias` 标志创建的每个容器维护名称到 ip 的映射。这意味着它知道 c2 容器的IP地址。
+- 第四步：DNS 服务器将 c2 容器的 IP 地址返回给 c1 容器中的本地解析器。如果 c1 和 c2 在不同的 Docker 网络上，它将不会返回IP地址 —— 名称解析只适用于相同网络上的容器。
+- 第五步：c1 容器向 c2 的 IP 地址发送 ping 请求（ICMP echo request）。
+
+只是为了确认几点。
+
+Docker会自动将你用 `--name` 或 `--net-alias` 标志创建的每个容器的名称和IP注册到 Docker 内嵌的 DNS 服务中。它还自动配置每个容器，使其使用嵌入式 DNS 服务将名称转换为 ip。名称解析（服务发现）是网络范围的，这意味着它只适用于同一网络上的容器和服务。
+
+关于服务发现和名称解析的最后一点……
+
+您可以使用 --dns 标志来启动具有自定义 dns 服务器列表的容器和服务，并且您可以使用 --dns-search 标志来为针对非限定名称的查询添加自定义搜索域（即，当应用程序没有为它们使用的服务指定完全限定的 dns 名称时）。如果您的应用程序查询 Docker 环境之外的名称（例如 internet 服务），您会发现这两个方法都很有用。
+
+这两个选项都是通过向容器的 /etc/resolv.conf 文件添加条目来工作的。
+
+运行以下命令启动一个新的容器，该容器使用臭名昭著的 8.8.8.8 谷歌DNS服务器，并将 nigelpoulton.com 作为不合格查询的搜索域。
+
+~~~shell
+$ docker run -it --name custom-dns \
+--dns=8.8.8.8 \
+--dns-search=nigelpoulton.com \
+alpine sh
+~~~
+
+您的 shell 提示符将更改为指示您已连接到容器。
+
+检查 `/etc/resolv.conf` 文件。
+
+~~~shell
+# cat /etc/resolv.conf
+	Generated by Docker Engine.
+	This file can be edited; Docker Engine will not make further changes once it
+	has been modified.
+nameserver 8.8.8.8
+search nigelpoulton.com
+~~~
+
+如果将容器连接到自定义网络，则文件的内容可能略有不同，但选项的工作原理是相同的。
+
+
+
+#### Ingress 负载均衡
+
+本节仅适用于 Docker Swarm。
+
+Swarm 支持两种向外部客户端发布服务的方式：
+
+- Ingress mode (default)
+- Host mode
+
+外部客户端可以通过任何集群节点访问 ingress mode 服务 —— 即使节点没有托管服务副本。
+
+host mode 只能通过运行副本的节点访问。
+
+两种模式如图13.19所示。
+
+<img src="img/1739253033036.jpg" style="zoom:80%;" />
+
+Ingress mode 是默认的，这意味着任何时候你用 `-p` 或 `--publish` 创建一个服务，Docker 都会以 ingress mode 发布它。如果你想在主机模式下发布服务，你需要使用 `--publish` 标志和 `mode=host` 选项。
+
+下面的示例以 host mode 发布服务，并且只在 swarm 上工作。
+
+~~~shell
+$ docker service create -d --name svc1 \
+--publish published=5005,target=80,mode=host \
+nginx
+~~~
+
+关于该命令的一些注意事项。
+
+`docker service create` 让你发布服务使用 *long form syntax* 或 *short form syntax*。
+
+它的缩写形式是 `-p 5005:80`。但是，不能使用 *short from syntax* 在主机模式下发布服务。
+
+长格式如下：`--publish published=5005,target=80,mode=host`。它是一个逗号分隔的列表，命令后没有空格，选项的工作方式如下：
+
+- **published=5005** 使服务通过端口 5005 对外部客户端可用
+- **target=80** 确保到达发布端口的请求被映射回服务副本上的端口80
+- **mode=host** 确保请求只有在到达运行服务副本的节点时才会到达服务
+
+您几乎总是使用进入模式。
+
+在幕后，ingress mode 使用第4层路由网格，Docker 称之为 **service mesh** 或 **swarm-mode service mesh**。图13.20 显示了外部请求到达集群时的基本流量流程，该请求以入口模式暴露。
+
+<img src="img/1739254050417.jpg" style="zoom:80%;" />
+
+让我们快速浏览一下这个图。
+
+顶部的命令部署一个名为 **svc1** 的新 Swarm 服务和一个副本，将其连接到 overnet 网络，并将其发布到入口网络的端口5005上。当你创建集群时，Docker 会自动创建 ingress network，并将每个节点都附加到其中。在端口 5005 上发布服务的行为使得它可以通过端口5005 在每个集群节点上访问，因为每个节点都连接到入口网络。Docker 还创建了一个集群范围的规则，通过 ingress network 将到达端口 5005 上节点的所有流量路由到 svc1 副本的端口 80。
+
+现在让我们跟踪这个外部请求。
+
+1. 外部客户端通过端口 5005 向节点1发送请求
+2. 节点1 接收到请求，并知道将到达端口 5005 的流量转发到 ingress network
+3. ingress network 将请求转发给正在运行副本的节点2
+4. 节点2 接收请求并将其传递给端口80上的副本
+
+如果服务有多个副本，swarm 足够聪明，可以在所有副本之间平衡请求。
+
+
+
+### Docker Networking – The Commands
+
+- docker network ls lists all the Docker networks available to the host.
+
+• docker network create is how you create a new Docker network. You have
+
+to give the network a name and you can use the -d flag to specify which driver
+
+creates it.
+
+• docker network inspect provides detailed configuration information about
+
+Docker networks.
+
+• docker network prune deletes all unused networks on a Docker host.
+
+• docker network rm Deletes specific networks on a Docker host or swarm.
+
+You also ran some native Linux commands.
+
+• brctl show prints a list of all kernel bridges on the Docker host and shows if any
+
+containers are connected.
+
+• ip link show prints bridge configuration data. You ran an ip link show
+
+docker0 to see the configuration of the docker0 bridge on your Docker host.
+
+
+
+
+
+## 第十四章 Docker 覆盖网络
+
+覆盖网络是大多数云原生微服务应用的核心。
+
+这章拆解成如下部分：
+
+- Docker 覆盖网络
+- Docker 覆盖网络历史
+- 构建和测试覆盖网络
+- 解释覆盖网络
+
+
+
+### Docker 覆盖网络
+
+现实世界中的容器需要一种可靠且安全的方式来进行通信，而不需要关心它们运行在哪个主机上，或者这些主机连接到哪个网络。这就是覆盖网络发挥作用的地方 —— 它们创建了扁平的、安全的、跨多个主机的第二层网络。不同主机上的容器可以连接到同一个覆盖网络，直接通信。
+
+Docker 提供了简单配置和默认安全的本地覆盖网络。
+
+在幕后，Docker 在 libnetwork 和本地覆盖驱动程序之上构建覆盖网络。Libnetwork 是容器网络模型（Container Network Model， CNM）的规范实现，覆盖驱动程序实现了构建覆盖网络的所有机制。
+
+
+
+### Docker 覆盖网络历史
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
