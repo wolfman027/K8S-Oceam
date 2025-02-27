@@ -5045,21 +5045,353 @@ Docker 提供了简单配置和默认安全的本地覆盖网络。
 
 ### Docker 覆盖网络历史
 
+2015年3月，Docker, Inc.收购了一家名为 Socket Plane 的容器网络初创公司，目的有两个：
+
+1. 为Docker带来覆盖网络
+2. 为开发人员简化容器联网
+
+他们完成了这两个目标，在2024年和可预见的未来，覆盖网络仍然是容器网络的核心。
+
+然而，在简单的 Docker 命令背后隐藏着许多复杂性。如果您是一个普通的 Docker 用户，了解这些命令可能就足够了。但是，如果您计划在生产中使用 Docker，特别是如果您计划使用 Swarm 和 Docker 网络，那么我们将介绍的内容将是至关重要的。
+
+
+
+### 构建和测试 Docker 覆盖网络
+
+您至少需要在集群中配置两个Docker节点才能进行操作。书中的示例显示了通过路由器连接的不同网络上的两个节点，但您的节点可以在同一网络上。您可以在同一台笔记本电脑或计算机上使用两个 Multipass 虚拟机，但是只要节点可以通信，任何 Docker 配置都可以工作。我不推荐使用Docker Desktop，因为你只能得到一个节点，无法获得完整的体验。
+
+下图显示了初始的实验室配置。记住，你的节点可以在同一个网络上，这只意味着你的底层网络更简单。稍后我们将解释底层网络。
+
+<img src="img/1740350497855.jpg" style="zoom:67%;" />
+
+#### Build a Swarm
+
+您将需要一个集群，因为覆盖网络利用集群的键值存储和其他安全特性。本节构建一个包含两个 Docker 节点 node1 和 node2 的双节点集群。如果你已经有了 swarm，你可以跳过这一部分。
+
+您需要用环境中的值替换 IP 地址和名称。您还需要确保在两个节点之间打开以下网络端口：
+
+- 2377/tcp for management plane comms
+- 7946/tcp and 7946/udp for control plane comms (SWIM-based gossip)
+- 4789/udp for the VXLAN data plane
+
+在 node1 上运行如下命令。
+
+~~~shell
+$ docker swarm init
+Swarm initialized: current node (1ex3...o3px) is now a manager.
+~~~
+
+命令输出包含了一个 **docker swarm join** 命令。复制这个命令并在 node2 上执行。
+
+~~~shell
+$ docker swarm join \
+--token SWMTKN-1-0hz2ec...2vye \
+172.31.1.5:2377
+This node joined a swarm as a worker.
+~~~
+
+现在您有了一个双节点 Swarm，其中 node1 作为管理器，node2 作为工作器。
+
+
+
+#### 创建一个覆盖网络
+
+让我们创建一个新的加密覆盖网络，叫做 uber-net。
+
+从管理节点（node1）运行以下命令。
+
+~~~shell
+$ docker network create -d overlay -o encrypted uber-net
+vdu1yly429jvt04hgdm0mjqc6
+~~~
+
+你创建了一个全新的加密覆盖网络。网络跨越集群中的两个节点，Docker 使用 TLS 对其进行加密（GCM模式下的AES）。它还每12小时轮换一次加密密钥。
+
+如果你没有指定 `-o encrypted` 标志，Docker仍然会加密控制平面（管理流量），但不会加密数据平面（应用流量）。这一点很重要，因为对数据平面进行加密可能会使网络性能降低大约10%。
+
+列出 node1 上的网络。
+
+~~~shell
+$ docker network ls
+NETWORK ID		NAME			DRIVER		SCOPE
+vdu1yly429jv	uber-net 	overlay 	swarm 		<<---- New overlay network
+~~~
+
+这个新网络位于列表的底部，称为 uber-net，它的范围是整个集群（SCOPE = swarm）。这意味着它跨越集群中的每个节点。但是，如果您列出node2上的网络，您将看不到 uber-net 网络。这是因为 Docker 只在需要的时候将覆盖网络扩展到工作节点。在我们的例子中，当 Docker 运行一个需要它的容器时，它会将 uber-net 网络扩展到 node2。这种懒惰的网络部署方法通过减少集群上的网络八卦量来提高可伸缩性。这种慵懒的网络部署方法通过减少集群上的冗余通信来提高可伸缩性。
+
+
+
+#### 在覆盖网络上附加一个容器
+
+现在你有了一个覆盖网络，让我们连接一个容器到它。
+
+默认情况下，您只能将作为集群服务一部分的容器附加到覆盖网络。如果要添加独立容器，则需要使用 --attachable 标志创建覆盖层。
+
+该示例将创建一个名为 test 的集群服务，该服务在 uber-net 网络上有两个副本。一个副本将部署到 node1，另一个副本将部署到node2，导致 Docker 将覆盖网络扩展到 node2。
+
+在 node1 上运行以下命令。
+
+~~~shell
+$ docker service create --name test \
+--network uber-net \
+--replicas 2 \
+ubuntu sleep infinity
+~~~
+
+检查服务状态。
+
+~~~shell
+$ docker service ps test
+ID 					NAME 		IMAGE 					NODE 		DESIRED STATE 	CURRENT STATE
+sm1...1nw 	test.1 	ubuntu:latest 	node1 	Running 				Running
+tro...kgk 	test.2 	ubuntu:latest 	node2 	Running 				Running
+~~~
+
+NODE 列显示在每个节点上运行一个副本。
+
+切换到 node2 并运行 docker network ls 以验证它现在可以看到 uber-net 网络。
+
+祝贺你。您已经创建了一个新的覆盖网络，它跨越了独立底层网络上的两个节点，并将两个容器附加到它上面。当我们到达理论部分并了解幕后发生的惊人复杂性时，您将欣赏您所做的事情的简单性！
+
+
+
+#### 测试覆盖网络
+
+图14.2 显示了当前的设置，两个容器运行在不同的 Docker 主机上，但连接到相同的覆盖。
+
+![](img/1740436615339.jpg)
+
+下面的步骤将引导您获取容器名称和IP地址，然后查看它们是否可以相互ping通。
+
+切换回 node1 并运行 docker 网络检查，查看覆盖网络的子网信息和分配给服务副本的任何IP地址。
+
+~~~shell
+$ docker network inspect uber-net
+[
+    {
+        "Name": "uber-net",
+        "Id": "vdu1yly429jvt04hgdm0mjqc6",
+        "Scope": "swarm",
+        "Driver": "overlay",
+        "EnableIPv6": false,
+        "IPAM": {
+            "Driver": "default",
+            "Options": null,
+            "Config": [
+                {
+                    "Subnet": "10.0.0.0/24", 		<<---- Subnet info
+										"Gateway": "10.0.0.1" 			<<---- Subnet info
+                }
+						"Containers": {
+                    "Name": "test.1.tro80xqwm7k1bsyn3mt1fjkgk", 	<<---- Replica ID
+										"IPv4Address": "10.0.0.3/24", 								<<---- Container IP
+										<Snip>
+                },
+<Snip>
+~~~
+
+我已经截断了输出并突出显示了子网信息和连接容器的ip。需要注意的一点是，Docker 只显示在本地节点上运行的容器的IP地址。例如，本书中的输出只显示第一个副本 test.1.tro…kgk 的IP。如果在 node2 上运行相同的命令，将看到另一个副本的名称和IP。
+
+在两个节点上运行以下命令，获取两个副本的本地容器名称、id和IP地址，并记录它们。第二个命令末尾的 ID （d7766923a5a7）是docker ps 命令返回的容器ID。您需要替换环境中的值。
+
+~~~shell
+$ docker ps
+CONTAINER ID 		IMAGE 					COMMAND 					CREATED 		STATUS 			NAME
+d7766923a5a7 		ubuntu:latest 	"sleep infinity" 	2 hrs ago 	Up 2 hrs 		test.1.tro...kgk
+~~~
+
+~~~shell
+$ docker inspect \
+--format='{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' d7766923a5a7
+10.0.0.3
+~~~
+
+我的环境中有以下内容：
+
+- **replica 1**: ID=d7766923a5a7, Name=test.1.tr0...kgk, IP=10.0.0.3
+
+- **replica 2**: ID=b6c897d1186d, Name=test.2.sm1...1nw, IP=10.0.0.4
+
+图14.3显示了到目前为止的配置。在您的实验室中，子网和IP地址可能不同。
+
+![](img/1740437255628.jpg)
+
+正如您所看到的，第2层覆盖网络跨越两个节点，并且每个容器都使用自己的IP连接到它。这意味着 node1 上的容器可以 ping node2 上的容器，即使两个节点位于不同的底层网络上。
+
+让我们来测试一下。您需要容器的名称和ip。
+
+登录到任意一个容器并安装ping实用程序。
+
+~~~shell
+$ docker exec -it d7766923a5a7 bash
+
+# apt update && apt-get install iputils-ping -y
+<Snip>
+Reading package lists... Done
+Building dependency tree
+Reading state information... Done
+<Snip>
+Setting up iputils-ping (3:20190709-3) ...
+Processing triggers for libc-bin (2.31-0ubuntu9) ...
+~~~
+
+现在通过 IP 和副本 ID ping 远程容器。
+
+~~~shell
+# ping 10.0.0.4
+PING 10.0.0.4 (10.0.0.4) 56(84) bytes of data.
+64 bytes from 10.0.0.4: icmp_seq=1 ttl=64 time=1.06 ms
+64 bytes from 10.0.0.4: icmp_seq=2 ttl=64 time=1.07 ms
+64 bytes from 10.0.0.4: icmp_seq=3 ttl=64 time=1.03 ms
+64 bytes from 10.0.0.4: icmp_seq=4 ttl=64 time=1.26 ms
+^C
+
+# ping test.2.sm180xqwm7k1bsyn3mt1fj1nw
+PING test.2.sm180xqwm7k1bsyn3mt1fj1nw (10.0.0.4) 56(84) bytes of data.
+64 bytes from test.2.sm1...1nw.uber-net (10.0.0.4): icmp_seq=1 ttl=64 time=2.83 ms
+64 bytes from test.2.sm1...1nw.uber-net (10.0.0.4): icmp_seq=2 ttl=64 time=8.39 ms
+64 bytes from test.2.sm1...1nw.uber-net (10.0.0.4): icmp_seq=3 ttl=64 time=5.88 ms
+^C
+~~~
+
+祝贺你。容器可以通过覆盖网络相互ping通，并且所有的流量都是加密的。
+
+也可以对 ping 命令的路由进行跟踪。这将报告一个单跳，证明容器是通过覆盖网络直接通信的——幸运的是不知道任何底层网络正在被遍历。
+
+您需要在容器中安装 **traceroute** 才能使其工作。
+
+~~~shell
+# apt install traceroute
+<Snip>
+
+# traceroute 10.0.0.4
+traceroute to 10.0.0.4 (10.0.0.4), 30 hops max, 60 byte packets
+1 test-svc.2.sm180xqwm7k1bsyn3mt1fj1nw.uber-net (10.0.0.4) 1.110ms 1.034ms 1.073ms
+~~~
+
+到目前为止，您已经创建了一个覆盖网络和一个将两个容器连接到它的群服务。Swarm 将容器调度到两个不同的节点，并且您证明了它们可以通过覆盖网络相互 ping 通。
+
+既然您已经看到了构建和使用安全覆盖网络是多么容易，那么让我们来了解 Docker 是如何在幕后构建它们的。
+
+
+
+### 解释覆盖网络
+
+首先，Docker 使用 VXLAN 隧道来创建虚拟的第2层覆盖网络。那么，让我们做一个快速的 VXLAN 入门。
+
+
+
+#### VXLAN 入门
+
+在最高级别，Docker 使用 vxlan 在现有的第3层基础设施之上创建第2层网络。有很多术语意味着你可以在复杂的网络上创建简单的网络。前几节中的实际示例创建了一个新的 10.0.0.0/24 层网络，它抽象了下面更复杂的网络拓扑。请参见图14.4，并记住您的底层网络配置可能不同。
+
+![](img/1740609239812.jpg)
+
+幸运的是，VXLAN 是一种封装技术，因此对现有的路由器和网络基础设施是透明的。这意味着路由器和底层网络中的其他基础设施将VXLAN/覆盖流量视为常规 IP/UDP 数据包，并且无需更改即可处理它。
+
+为了创建覆盖层，Docker 通过底层网络创建了一个 VXLAN 隧道，这个隧道允许覆盖流量自由流动，而不必与底层网络的复杂性交互。
+
+**术语**：我们使用术语 *underlay networks* 或 *underlay infrastructure* 来指代覆盖隧道所通过的网络。
+
+VXLAN 隧道的每一端都有一个 VTEP (VXLAN tunnel Endpoint)，它对进出隧道的流量进行封装和解封装。参见图14.5。
+
+![](img/1740609608152.jpg)
+
+该图将第三层基础设施显示为云，原因有两个：
+
+- 它可能比前面图表中的两个网络和单个路由器复杂得多
+- VXLAN 隧道将复杂性抽象出来，使其不透明
+
+实际上，VXLAN 隧道穿过底层网络。但是，为了保持图的简单性，我没有在图中显示这一点。
+
+
+
+#### 流量交通示例
+
+前面的实际示例有两台主机通过IP网络连接。您在两台主机上部署了一个覆盖网络，将两个容器连接到它，并进行了ping测试。让我们来解释一下幕后发生的一些事情。
+
+Docker在每个主机上创建了一个新的 *sandbox*（网络命名空间），并使用一个名为 **Br0** 的新交换机。创建了一个 **VTEP**，一端连接到 **Br0** 虚拟交换机，另一端连接到主机的网络堆栈。主机网络堆栈的末端在主机连接的底层网络上获得一个IP地址，并绑定到 UDP 端口 4789。最后，每台主机上的两个 VTEP 创建了一个 VXLAN 隧道作为覆盖网络的骨干。
+
+图14.6 显示了配置。记住，VXLAN tunnel 穿过图底部的网络；为了便于阅读，我把它画得更高一些。
+
+![](img/1740610293456.jpg)
+
+至此，您已经创建了 VXLAN 覆盖层，并且准备好连接容器了。
+
+Docker 现在在每个容器中创建一个虚拟以太网适配器（**veth**），并将其连接到本地的 **Br0** 虚拟交换机。最终的拓扑如图14.7所示，尽管它很复杂，但您现在应该看到容器是如何通过 VXLAN 覆盖层进行通信的，尽管它们的主机位于两个独立的网络上 —— 覆盖层是通过底层网络隧道传输的虚拟网络。
+
+![](img/1740610737527.jpg)
+
+现在您已经了解了 Docker 是如何创建覆盖网络的，接下来让我们看看这两个容器是如何通信的。
+
+**警告：**本节非常技术性，您不需要了解日常操作的全部内容。
+
+对于本例，我们将 **Node1** 上的容器称为 “**C1**”，将 **Node2** 上的容器称为 “**C2**”。我们还假设 **C1** 想 ping **C2**，就像我们在前面的实际例子中做的那样。
+
+图14.8 显示了添加了容器名称和 IP 的完整配置。
+
+![](img/1740620525880.jpg)
+
+**C1** 向 **C2** 的 IP 地址 10.0.0.4 发起 ping 请求。
+
+C1 在其本地 MAC 地址表（ARP缓存）中没有 10.0.0.4 的条目，因此它在所有接口上传播数据包，包括连接到 **Br0** 网桥的第5个接口。
+
+**Br0** 桥知道它可以将 10.0.0.4 的流量转发到所连接的VTEP接口，并向容器发送代理 ARP 应答。
+
+> **ARP（Address Resolution Protocol）**
+
+这将导致 **VTEP** 学习如何通过更新自己的 MAC 表来转发报文，从而将所有 10.0.0.4 的后续报文直接发送到本地 **VTEP**。
+
+**Br0** 交换机知道 **C2** 容器，因为 Docker 通过网络内置的 gossip 协议将所有新容器的详细信息传播到每个集群节点。
+
+---
+
+接下来，**C1** 容器中的 **veth** 将ping发送到 **VTEP** 接口，**VTEP** 接口将 ping 封装，以便通过 **VXLAN** 隧道传输。
+
+封装过程中增加了一个 **VXLAN** 头，其中包含一个 **VNID** (VXLAN network ID)，用于映射 vlan 和 VXLAN 之间的流量 —— 每个 **VLAN** 被映射到自己的 **VNID**，这样报文就可以在接收端解封装，转发到正确的 **VLAN**。这样可以保持网络隔离。
+
+封装还将帧封装在 **UDP** 报文中，并在目的 **IP** 字段中添加 **Node2** 上的远端 VTEP 的IP。它还添加了 **UDP/4789** 套接字信息。这种封装允许数据包在底层网络上路由，而底层不知道任何关于 **VXLAN** 的信息。
+
+当数据包到达 **Node2** 时，主机的内核看到它的地址是 UDP 端口 4789，并且知道它有一个绑定到这个套接字的 **VTEP**。
+
+这意味着它将报文发送给 **VTEP**， **VTEP** 读取 **VNID** 并将其解封装，然后将其发送到 **VNID** 对应 **VLAN** 上自己的本地 **Br0** 交换机。从那里，它将其传递到C2容器。
+
+---
+
+我的朋友们，这就是 Docker 是如何使用 VXLAN 来构建和操作覆盖网络的 —— 一个简单的 Docker 命令背后隐藏着一大堆令人兴奋的复杂性。
+
+我希望这足以让您入门，并在与您的网络团队讨论 Docker 基础架构的网络方面时提供帮助。关于与您的网络团队交谈的话题……不要认为您现在已经了解了 VXLAN 的一切。如果你这样做，你可能会让自己难堪。这是我的经验之谈；-)
+
+最后一件事。Docker 还支持覆盖网络中的第三层路由。例如，你可以用两个子网创建一个覆盖网络，Docker 将处理路由。下面的命令将创建一个名为 prod-net 的新覆盖，其中包含两个子网。Docker 会自动在沙箱中创建两个名为 Br0 和 Br1 的虚拟交换机，并处理所有路由。
+
+~~~shell
+$ docker network create --subnet=10.1.1.0/24 --subnet=11.1.1.0/24 -d overlay prod-net
+~~~
+
+
+
+#### 清理
+
+~~~shell
+$ docker service rm test
+
+$ docker network rm uber-net
+~~~
+
+
+
+### Docker overlay networking – The commands
+
+- **docker network create** tells Docker to create a new network. You use the -d overlay flag to use the overlay driver to create an overlay network. You can also pass the -o encrypted flag to tell Docker to encrypt network traffic. However, performance may drop in the region of 10%.
+- **docker network ls** lists all the container networks visible to a Docker host. Docker hosts running in swarm mode only see overlay networks if they run containers attached to the network. This keeps network-related management traffic to a minimum.
+- **docker network inspect** shows detailed information about a particular container network. You can find out the scope, driver, IPv4 and IPv6 info, subnet configuration, IP addresses of connected containers, VXLAN network ID, encryption state, and more.
+- **docker network rm** deletes a network.
 
 
 
 
 
-
-
-
-
-
-
-
-
-
-
+## 第十五章 Volumes and persistent data
 
 
 

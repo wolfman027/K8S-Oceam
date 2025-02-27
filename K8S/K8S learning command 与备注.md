@@ -55,6 +55,18 @@ deployment.apps "hello-minikube" deleted
 
 # Pod
 
+### 根据 yaml 创建 Pod
+
+~~~shell
+$ kubectl create -f pod.yaml
+~~~
+
+
+
+
+
+
+
 ### 获取所有的 pod
 
 ~~~shell
@@ -65,9 +77,17 @@ $ kubectl get pods
 
 ## 获取 pod 日志
 
+> kubectl logs hello-pt4j2 -c test
+>
+> 如果 pod 中有多个 container，则需要增加 `-c test` 后边test 是容器的名称
+
 ~~~shell
 h.a.hu@AMAR64XLRH7PP ~ $ kubectl logs hello-pt4j2
 Hello, Kubernetes!
+
+
+h.a.hu@AMAR64XLRH7PP ~ $ kubectl logs hello-pt4j2 -c test
+日志信息
 ~~~
 
 
@@ -77,6 +97,10 @@ Hello, Kubernetes!
 ~~~shell
 $ kubectl describe pod nginx
 ~~~
+
+
+
+
 
 
 
@@ -97,6 +121,12 @@ kubectl get pods -l 'environment in (production),tier in (frontend)'
 
 
 
+
+# Service
+
+~~~shell
+$ kubectl get svc
+~~~
 
 
 
