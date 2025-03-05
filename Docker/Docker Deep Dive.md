@@ -5393,6 +5393,239 @@ $ docker network rm uber-net
 
 ## 第十五章 Volumes and persistent data
 
+创建和管理数据的有状态应用程序是现代云原生应用程序的重要组成部分。本章解释 Docker volumes 如何帮助有状态应用程序管理它们的数据。
+
+### Volumes and persistent data
+
+有两种主要的数据类型 —— **持久数据**和**非持久数据**。
+
+**持久数据**是您关心并需要保存的数据。它包括客户记录、财务数据、研究结果、审计数据，甚至某些类型的日志。
+
+**非持久性数据**是您不关心也不需要保存的数据。
+
+我们将创建和管理持久数据的应用程序称为**有状态应用程序**，而将不创建或管理持久数据的应用程序称为**无状态应用程序**。
+
+这两方面都很重要，Docker 对这两方面都有解决方案。
+
+对于无状态应用，Docker 为每个容器创建了一个与容器生命周期绑定的非持久化本地存储区域。这种存储适合于临时数据和临时文件，但是当您删除容器或容器终止时，就会丢失它。
+
+Docker 为创建和管理重要数据的有状态应用程序提供了 volumes。volumes 是安装到容器中的独立对象，它们有自己的生命周期。这意味着在删除容器时不会丢失卷或卷上的数据。甚至可以将卷挂载到不同的容器中。
+
+
+
+### Containers without volumes
+
+在 Docker 的早期，容器只适用于不生成重要数据的无状态应用程序。然而，尽管这些应用程序是无状态的，但其中许多应用程序仍然需要一个地方来写入临时数据。因此，如图15.1所示，Docker 通过堆叠只读映像层并在上面放置一个薄的本地存储层来创建容器。同样的技术允许多个容器共享相同的只读映像层。
+
+![](img/1741041228197.jpg)
+
+这个薄薄的本地存储层对于容器的读写特性是不可或缺的。例如，如果应用程序需要更新现有文件或添加新文件，它会在本地存储层进行更改，然后 Docker 将它们合并到容器的视图中。然而，本地存储与容器的生命周期是耦合的，这意味着它在创建容器时被创建，在删除容器时被删除。这意味着它不是保存（持久化）数据的好地方。
+
+Docker 将本地存储层保留在 Docker 主机的文件系统上，您将听到它被称为各种名称，例如薄的可写层、临时存储、读写存储和图形驱动存储。它通常位于您的 Docker 主机上的以下位置：
+
+- Linux containers: /var/lib/docker/<storage-driver>/...
+- Windows containers: C:\ProgramData\Docker\windowsfilter\...
+
+即使本地存储层允许您更新活动容器，您也不应该这样做。相反，您应该将容器视为不可变对象，一旦部署就不要更改它们。例如，如果您需要修复或更改活动容器的配置，您应该使用更改创建和测试一个新的容器，然后用新的容器替换活动容器。
+
+需要明确的是，像数据库这样的应用程序可以更改它们管理的数据。但是用户和配置工具不应该更改容器的配置，比如它的网络或应用程序配置。您应该总是在新容器中进行这样的更改，然后用新容器替换旧容器。
+
+如果您的容器不创建持久数据，那么这个薄的可写本地存储层就可以了，这样就可以了。但是，如果容器创建持久数据，则需要阅读下一节。
+
+
+
+### Containers with volumes
+
+应该使用卷来处理容器中的持久数据有三个主要原因：
+
+- 卷是独立的对象，与容器的生命周期无关
+- 您可以将卷映射到专门的外部存储系统
+- 不同 Docker 主机上的多个容器可以使用卷来访问和共享相同的数据
+
+首先创建卷，然后创建容器，最后将卷挂载到容器中。当您将它挂载到卷中时，您将它挂载到容器文件系统中的一个目录中，您向该目录写入的任何内容都将存储在卷中。删除容器后，卷和数据仍然存在。您甚至可以将幸存的卷挂载到另一个容器中。
+
+图15.2 显示了容器外部作为单独对象的 Docker 卷。卷被挂载到容器的文件系统 /data 中，您写入该目录的任何内容都将存储在卷上，并且在删除容器后仍然存在。
+
+![](img/1741042011655.jpg)
+
+该映像还显示，您可以将卷映射到**外部存储系统**或**Docker主机上的目录**。外部存储系统可以是云服务或专用存储设备，但无论哪种方式，卷的生命周期都与容器解耦。容器的所有其他目录都使用Docker主机上本地存储区域中的薄的可写层。
+
+
+
+#### 创建和管理 Docker volumes
+
+volumes 是 Docker 中的一等对象。这意味着在 API 中有一个 `docker volume` 子命令和一个卷资源。
+
+运行以下命令创建一个名为 **myvol** 的新卷。
+
+~~~shell
+$ docker volume create myvol
+myvol
+~~~
+
+默认情况下，Docker 使用内置的本地驱动程序/创建新卷。而且，正如驱动程序的名称所示，这些 volumes 仅对与 volumes 相同节点上的容器可用。您可以使用 `-d` 标志来指定一个不同的驱动程序，但是您需要先安装驱动程序。
+
+第三方驱动程序提供高级功能和访问外部存储系统（如云存储服务）和本地存储系统（如SAN和NAS）的权限。图15.3显示了通过插件（驱动程序）连接到外部存储系统的Docker主机。
+
+![](img/1741042565273.jpg)
+
+一旦创建了 volume，就可以使用`docker volume ls` 命令查看，并使用 `docker volume inspect` 命令检查它。
+
+~~~shell	
+$ docker volume ls
+DRIVER 		VOLUME 		NAME
+local 		myvol
+$ docker volume inspect myvol
+[
+	{
+		"CreatedAt": "2024-05-15T12:23:14Z",
+		"Driver": "local",
+		"Labels": null,
+		"Mountpoint": "/var/lib/docker/volumes/myvol/_data",
+		"Name": "myvol",
+		"Options": null,
+		"Scope": "local"
+	}
+]
+~~~
+
+注意，Driver 和 Scope 字段都被设置为 local。这意味着您使用本地驱动程序创建了 volume，并且它仅对这个 Docker主机上的容器可用。**Mountpoint** 告诉您 volume 在 Docker 主机文件系统中的位置。
+
+默认情况下，Docker 会在 /var/lib/ Docker /volumes 目录下为每个使用本地驱动程序创建的卷提供自己的目录。这意味着任何访问 Docker 主机的人都可以绕过容器，直接在主机的文件系统中访问卷的内容。当我们将一个文件直接复制到 Docker 主机上的卷目录时，您在 Docker Compose 章节中看到了这一点，该文件立即出现在容器内的卷中。然而，我们并不推荐这样做。
+
+既然已经创建了卷，就可以创建容器来使用它了。但是，在此之前，有两种方法可以删除Docker卷：
+
+- `docker volume prune`
+- `docker volume rm`
+
+`docker volume prune` 命令删除所有未挂载到容器或服务副本中的卷，因此请谨慎使用！
+
+`docker volume rm` 命令更精确，允许您指定要删除哪些卷。
+
+这两个命令都不会删除容器或服务副本正在使用的卷。
+
+您创建的 myvol 卷没有被容器使用，因此您可以使用任意一个命令删除它。如果使用 prune 命令，请小心，因为它也可能删除其他卷。
+
+~~~shell
+$ docker volume prune --all
+WARNING! This will remove all local volumes not used by at least one container.
+Are you sure you want to continue? [y/N] y
+Deleted Volumes:
+myvol
+Total reclaimed space: 0B
+~~~
+
+祝贺你。您已经创建、检查和删除了Docker卷，并且这些操作都不涉及容器。这证明了卷与容器是分离的。
+
+至此，您已经了解了创建、列出、检查和删除Docker卷的所有命令。您甚至已经在撰写和 Swarm 堆栈章节中看到了如何通过撰写文件部署它们。但是，您也可以使用 VOLUME 指令通过 Dockerfiles 部署卷。格式为 VOLUME <container-mount-point>。有趣的是，在Dockerfile中定义卷时不能指定主机目录。这是因为主机目录可能因主机操作系统的不同而不同，如果指定了主机上不存在的目录，则很容易破坏构建。因此，在 Dockerfile 中定义卷需要在部署时指定主机目录。
+
+
+
+#### 在容器中使用卷
+
+运行以下命令创建一个名为 **voltainer** 的新独立容器，该容器挂载一个名为 **bizvol** 的卷。
+
+~~~shell
+$ docker run -it --name voltainer --mount source=bizvol,target=/vol alpine
+~~~
+
+该命令指定了 `--mount` 标志，告诉 Docker 将一个名为 **bizvol** 的卷挂载到 /vol 的容器中。
+
+即使没有名为 **bizvol** 的卷，该命令也成功完成了。这就提出了一个重要的问题：
+
+- 如果您指定的卷已经存在，Docker将使用它 
+- 如果您指定的卷不存在，Docker将创建它
+
+在我们的示例中，**bizvol** 不存在，所以 Docker 创建了它并将其挂载到容器中。
+
+按 Ctrl PQ 返回到本地 shell，然后列出卷以确保 Docker 创建了它。
+
+~~~shell
+# <Ctrl-PQ>
+$ docker volume ls
+DRIVER 		VOLUME 		NAME
+local 		bizvol
+~~~
+
+即使卷与容器解耦，Docker 也不会让你删除这个卷，因为它正在被 voltainer 容器使用。
+
+试着去删除它。
+
+~~~shell
+$ docker volume rm bizvol
+Error response from daemon: remove bizvol: volume is in use - [b44d3f82...dd2029ca]
+~~~
+
+正如所料，您无法删除它。
+
+volume 是全新的，所以没有任何数据。让我们在容器上执行并向其写入一些数据。
+
+~~~shell
+$ docker exec -it voltainer sh
+# echo "I promise to write a book review on Amazon" > /vol/file1
+~~~
+
+该命令将一些文本写入卷挂载的 /vol 目录中名为 file1 的文件中。
+
+运行一些命令以确保文件和数据存在。
+
+~~~shell
+# ls -l /vol
+total 4
+-rw-r--r-- 1 root root 50 May 23 08:49 file1
+
+# cat /vol/file1
+I promise to write a book review on Amazon
+~~~
+
+键入 exit 返回到 Docker 主机的 shell，然后使用以下命令删除容器。
+
+~~~shell
+# exit
+$ docker rm voltainer -f
+voltainer
+~~~
+
+检查 Docker 是否删除了容器，但保留了卷。
+
+~~~shell
+$ docker ps -a
+CONTAINER ID IMAGE COMMAND CREATED STATUS
+
+$ docker volume ls
+DRIVER VOLUME NAME
+local bizvol
+~~~
+
+由于 volume 仍然存在，您可以在 Docker 主机的本地文件系统中查看其内容。但是请记住，不建议通过主机的文件系统直接访问卷。我们只是为了示范和教育的原因向你展示如何做。
+
+从 Docker 主机终端运行以下命令。它们将显示 Docker 主机上卷目录的内容。第一个命令将显示该文件仍然存在，第二个命令将显示其内容。
+
+这个步骤在 Docker Desktop 上不起作用，因为 Docker Desktop 运行在虚拟机中。您可能需要在命令前加上 sudo。
+
+~~~shell
+$ ls -l /var/lib/docker/volumes/bizvol/_data/
+total 4
+-rw-r--r-- 1 root root 50 Jan 12 14:25 file1
+
+$ cat /var/lib/docker/volumes/bizvol/_data/file1
+I promise to write a book review on Amazon
+~~~
+
+太好了，volume 和数据还存在。
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 

@@ -368,7 +368,7 @@ Init 容器与普通的容器非常像，除了如下两点:
 
 
 
-##### Init 模版 - 示例 demo 验证通过
+##### Init 模版 - 示例 demo ✅
 
 提前需要拉取 busybox
 
@@ -458,6 +458,22 @@ $ vim myservice.yaml
 
 [root@master-88 ~]$ kubectl create -f myservice.yaml 
 service/myservice created
+
+[root@master-88 ~]# kubectl create -f mydb.yaml 
+service/mydb created
+
+
+[root@master-88 ~]$ kubectl logs myapp-pod -c init-mydb
+# 下面的日志说明找到了这个的 DNS 解析
+Name:	mydb.default.svc.cluster.local
+Address: 10.96.3.111
+~~~
+
+**最终主容器启动后，查看他的输出日志：**
+
+~~~shell
+[root@master-88 ~]$ kubectl logs myapp-pod -c myapp-container
+The app is running!
 ~~~
 
 
@@ -497,166 +513,393 @@ service/myservice created
 
 
 
-##### 探针模版 -  readinessProbe 检测示例 demo
+##### 探针模版 -  readinessProbe 检测示例 demo ✅
 
-~~~yaml
-apiVersion: vl
-kind: Pod
-metadata:
-  name: readiness-httpget-pod
-  namespace: default
-spec:
-  containers:
-  - name: readiness-httpget-container
-    image: hub.atguigu.com/library/myapp:v1
-    imagePullPolicy: IfNotPresent
-    readinessProbe:
-      httpGet:
-        port: 80
-        path: /index1.html
-      initialDelaySeconds: 1    <- 容器初始化后，延迟 1 秒开始调用
-      periodSeconds: 3					<- 重试检测时间，3s 检测一次
-~~~
+> 需要等 yongzhe 的镜像中心账号和密码
 
-~~~shell
-$ kubectl get pod
+**创建需要的镜像：**
 
-$ kubectl describe pod readiness-httpget-pod
+1. 创建文件夹
 
-$ kubectl exec readiness-httpget-pod -it -- /bin/sh
+   ~~~shell
+   $ mkdir readiness-probe
+   ~~~
 
-到容器中，创建对应的 index1.html
-~~~
+2. 创建 index.html 文件
+
+   ~~~shell
+   $ echo "Hello, readinessProbe! " > index1.html
+   ~~~
+
+3.  创建 Dockerfile 文件
+
+   ~~~dockerfile
+   # 使用基础镜像（例如 Nginx 或 Apache）
+   FROM registry.cn-hangzhou.aliyuncs.com/mingyuan_cloud_native/nginx:alpine
+   
+   # 将本地的 index1.html 复制到容器中
+   COPY index1.html /usr/share/nginx/html/index1.html
+   
+   # 暴露端口 80（如果基础镜像未声明）
+   EXPOSE 80
+   ~~~
+
+   ~~~shell
+   vim Dockerfile
+   ~~~
+
+4. 构建镜像
+
+   ~~~shell
+   $ docker build -t my-readiness-probe-app:latest .
+   ~~~
+
+5. 查询构建的镜像
+
+   ~~~shell
+   $ docker images
+   REPOSITORY                                                        TAG       IMAGE ID       CREATED              SIZE
+   readiness-httpget-app                                             latest    68e864b35bbb   About a minute ago   47.9MB
+   registry.cn-hangzhou.aliyuncs.com/mingyuan_cloud_native/nginx     alpine    1ff4bb4faebc   3 weeks ago          47.9MB
+   registry.cn-hangzhou.aliyuncs.com/mingyuan_cloud_native/busybox   latest    31311c5853a2   5 months ago         4.27MB
+   ~~~
+
+6. 打阿里云标签
+
+   ~~~shell
+   [root@master-88 ~]$ docker tag readiness-httpget-app:latest registry.cn-hangzhou.aliyuncs.com/mingyuan_cloud_native/readiness-httpget-app:latest
+   ~~~
+
+7. 登录阿里云容器镜像服务
+
+   ~~~shell
+   [root@master-88 ~]$ docker login --username=love747947072 registry.cn-hangzhou.aliyuncs.com
+   Password:  # 这里需要你录入密码
+   ~~~
+
+8. 登陆成功后，推送镜像
+
+   ~~~shell
+   [root@master-88 ~]$ docker push registry.cn-hangzhou.aliyuncs.com/mingyuan_cloud_native/readiness-httpget-app:latest
+   The push refers to repository [registry.cn-hangzhou.aliyuncs.com/mingyuan_cloud_native/readiness-httpget-app]
+   ca86039bc87f: Pushed 
+   c18897d5e3dd: Mounted from mingyuan_cloud_native/nginx 
+   9af9e76ea07f: Mounted from mingyuan_cloud_native/nginx 
+   f1f70b13aacc: Mounted from mingyuan_cloud_native/nginx 
+   252b6db79fae: Mounted from mingyuan_cloud_native/nginx 
+   c9ce8cb4e76a: Mounted from mingyuan_cloud_native/nginx 
+   8f3c313eb124: Mounted from mingyuan_cloud_native/nginx 
+   c1761f3c364a: Mounted from mingyuan_cloud_native/nginx 
+   08000c18d16d: Mounted from mingyuan_cloud_native/nginx 
+   latest: digest: sha256:5d0ada763ff3c1948b545eb1cf6015822650e71a118cd2bc9fb571eda041cbf4 size: 2196
+   ~~~
+
+9. 在 K8S 中构建 Pod
+
+   ~~~yaml
+   apiVersion: v1
+   kind: Pod
+   metadata:
+     name: readiness-httpget-pod
+     namespace: default
+   spec:
+     containers:
+     - name: readiness-httpget-container
+       image: registry.cn-hangzhou.aliyuncs.com/mingyuan_cloud_native/readiness-httpget-app:latest
+       imagePullPolicy: IfNotPresent
+       readinessProbe:
+         httpGet:
+           port: 80
+           path: /index1.html
+         initialDelaySeconds: 1    <- 容器初始化后，延迟 1 秒开始调用
+         periodSeconds: 3					<- 重试检测时间，3s 检测一次
+   ~~~
+
+10. 校验
+
+    ~~~shell
+    $ kubectl create -f readiness-httpget-pod.yaml 
+    pod/readiness-httpget-pod created
+    
+    $ kubectl get pod readiness-httpget-pod
+    NAME                    READY   STATUS    RESTARTS   AGE
+    readiness-httpget-pod   1/1     Running   0          6m56s		# 证明 Pod 成功运行
+    
+    $ kubectl describe pod readiness-httpget-pod # 获取一下 readiness-httpget-pod 的 ip
+    Status:           Running
+    IP:               100.104.229.176
+    
+    $ curl 100.104.229.176/index1.html # 获取 readiness-httpget-pod 网页内容
+    Hello, readinessProbe! 
+    
+    $ kubectl exec readiness-httpget-pod -it -- /bin/sh  # 进入 readiness-httpget-pod 容器中删除 index1.html，看看是否会重启 Pod
+    / # cd /usr/share/nginx/html/
+    /usr/share/nginx/html # ls
+    50x.html     index.html   index1.html
+    
+    /usr/share/nginx/html # mv index1.html index2.html
+    
+    $ kubectl get pod readiness-httpget-pod 
+    NAME                    READY   STATUS    RESTARTS   AGE
+    readiness-httpget-pod   0/1     Running   0          14m 		# Pod 从 READY 变成 不 READY
+    
+    $ curl 100.104.229.176/index1.html		# 再次访问页面变为 404
+    <html>
+    <head><title>404 Not Found</title></head>
+    <body>
+    <center><h1>404 Not Found</h1></center>
+    <hr><center>nginx/1.27.4</center>
+    </body>
+    </html>
+    ~~~
+
+---
 
 
 
 ##### 探针模版 -  livenessProbe 检测示例 demo
 
-**livenessProbe-exec**
+###### **livenessProbe-exec** ✅
 
-~~~yaml
-apiVersion: v1
-kind: Pod
-metadata:
-  name: liveness-exec-pod
-  namespace: default
-spec:
-  containers:
-  - name: liveness-exec-container
-    image: busybox
-    imagePullPolicy: IfNotPresent
-    command: ["/bin/sh","-c","touch /tmp/live ; sleep 60; rm -rf /tmp/live; sleep 3600"]
-    livenessProbe:
-      exec:
-        command: ["test","-e","/tmp/live"]
-      initialDelaySeconds: 1
-      periodseconds: 3
-~~~
+1. 创建 liveness-exec-pod.yaml 
+
+   ~~~yaml
+   apiVersion: v1
+   kind: Pod
+   metadata:
+     name: liveness-exec-pod
+     namespace: default
+   spec:
+     containers:
+     - name: liveness-exec-container
+       image: registry.cn-hangzhou.aliyuncs.com/mingyuan_cloud_native/busybox
+       imagePullPolicy: IfNotPresent
+       command: ["/bin/sh","-c","touch /tmp/live ; sleep 60; rm -rf /tmp/live; sleep 3600"] 
+       # 在 /tmp 目录下创建一个空文件 live，作为临时标志文件。
+       # 暂停进程 60 秒，此时容器保持运行，/tmp/live 文件存在。
+       # 60 秒后强制删除 /tmp/live 文件。-rf 确保即使文件不存在或权限问题也不报错。
+       # 再次暂停进程 1 小时（3600 秒），容器继续运行但无操作。
+       livenessProbe:
+         exec:
+           command: ["test","-e","/tmp/live"]
+         initialDelaySeconds: 1
+         periodSeconds: 3
+   ~~~
+
+2. 根据 yaml 配置文件创建 Pod
+
+   ~~~shell
+   $ kubectl create -f liveness-exec-pod.yaml # 创建 Pod
+   pod/liveness-exec-pod created
+   ~~~
+
+3. 查看 Pod 信息
+
+   ~~~shell
+   $ kubectl get pod liveness-exec-pod
+   NAME                READY   STATUS    RESTARTS   AGE
+   liveness-exec-pod   1/1     Running   0          89s
+   
+   $ kubectl get pod liveness-exec-pod
+   NAME                READY   STATUS    RESTARTS      AGE
+   liveness-exec-pod   1/1     Running   1 (98s ago)   3m17s
+   
+   $ kubectl get pod liveness-exec-pod
+   NAME                READY   STATUS    RESTARTS     AGE
+   liveness-exec-pod   1/1     Running   2 (1s ago)   3m19s
+   ~~~
+
+4. 可以看到 Pod 在执行一段时间后，会重启，这是因为 60s 过后，Pod 把校验的地址删除后，liveness 检测不到这个 /tmp/live 空文件，导致 Pod 重启
 
 ~~~shell
 $ kubectl delete pod -all	 #删除 default 空间所有 pod
 $ kubectl delete svc {service-name}
 $ kubectl get pod -w
-
 ~~~
 
 
 
-**livenessProbe-httpget**
+###### **livenessProbe-httpget** ✅
 
-~~~yaml
-apiVersion: v1
-kind: Pod
-metadata:
-  name: liveness-httpget-pod
-  namespace: default
-spec:
-  containers:
-  - name: liveness-httpget-container
-    image: hub.atguigu.com/library/myapp:v1
-    imagePullPolicy: IfNotPresent
-    ports:
-    - name: http
-      containerPort: 80
-    livenessProbe:
-      httpGet:
-        port: http
-        path: /index.html
-      initialDelaySeconds:
-      periodSeconds: 3
-      timeoutseconds: 10
-~~~
+1. liveness-httpget-pod.yaml
 
-```shell
-$ kubectl create -f live-http.yaml
-$ kubectl get pod
+   ~~~shell
+   $ vim liveness-httpget-pod.yaml
+   ~~~
 
-$ kubectl get pod -o wide
-$ curl IP/index.html
+   ~~~yaml
+   apiVersion: v1
+   kind: Pod
+   metadata:
+     name: liveness-httpget-pod
+     namespace: default
+   spec:
+     containers:
+     - name: liveness-httpget-container
+       image: registry.cn-hangzhou.aliyuncs.com/mingyuan_cloud_native/readiness-httpget-app:latest
+       imagePullPolicy: IfNotPresent
+       ports:
+       - name: http
+         containerPort: 80
+       livenessProbe:
+         httpGet:
+           port: http
+           path: /index.html
+         initialDelaySeconds:
+         periodSeconds: 3
+         timeoutSeconds: 10
+   ~~~
 
-$ kubectl exec liveness-httpget-container -it -- /bin/sh
-删除 index
-```
+2. 根据 yaml 创建 Pod
 
-**livenessProbe-tcp**
+   ~~~shell
+   $ kubectl create -f liveness-httpget-pod.yaml
+   pod/liveness-httpget-pod created
+   ~~~
 
-~~~yaml
-apiVersion: v1
-kind: Pod
-metadata:
-  name: probe-tcp
-spec:
-  containers:
-  - name: nginx
-    image: hub.atguigu.com/library/myapp:v1
-    livenessProbe:
-      initialDelayseconds: 5
-      timeoutSeconds: 1
-      tcpsocket:
-        port: 8080
-      periodseconds: 3
-~~~
+3. 通过获取 pod 信息，查看运行状态
 
-```shell
-$ kubectl delete pod --all
+   ~~~shell
+   $ kubectl get pod liveness-httpget-pod
+   NAME                   READY   STATUS    RESTARTS   AGE
+   liveness-httpget-pod   1/1     Running   0          36s
+   ~~~
 
-```
+4. 获取 pod IP 地址，通过 curl 获取 index.html 内容
+
+   ~~~shell
+   $ kubectl get pod liveness-httpget-pod
+   <Snip>
+   IP:               100.85.190.23
+   <Snip>
+   
+   $ curl 100.85.190.23/index.html
+   <!DOCTYPE html>
+   <html>
+   <head>
+   <title>Welcome to nginx!</title>
+   </head>
+   <Snip>
+   </html>
+   ~~~
+
+5. 进入 Pod，删除 index.html 并推出
+
+   >  /usr/share/nginx/html/ 因为 nginx 默认会在这个里边
+
+   ~~~shell
+   $  kubectl exec liveness-httpget-pod -it -- /bin/sh 		# 进入容器中进行交互
+   / # cd /usr/share/nginx/html/
+   /usr/share/nginx/html # ls
+   50x.html     index.html   index1.html
+   / # exit;
+   ~~~
+
+6. 检查 Pod 状态，发现他重启了，因为重启后，会在 nginx 下创建 index.html，所以不会再次重启。
+
+   ~~~shell
+   root@master-88 liveness-probe]# kubectl get pod liveness-httpget-pod 
+   NAME                   READY   STATUS    RESTARTS   AGE
+   liveness-httpget-pod   1/1     Running   0          8m18s
+   [root@master-88 liveness-probe]# kubectl get pod liveness-httpget-pod 
+   NAME                   READY   STATUS    RESTARTS     AGE
+   liveness-httpget-pod   1/1     Running   1 (0s ago)   8m19s
+   ~~~
+
+   
+
+###### **livenessProbe-tcp** ✅
+
+1. liveness-tcp-pod.yaml
+
+   ~~~yaml
+   apiVersion: v1
+   kind: Pod
+   metadata:
+     name: liveness-tcp-pod
+   spec:
+     containers:
+     - name: nginx
+       image: registry.cn-hangzhou.aliyuncs.com/mingyuan_cloud_native/readiness-httpget-app:latest
+       livenessProbe:
+         initialDelaySeconds: 5
+         timeoutSeconds: 1
+         tcpSocket:
+           port: 80
+         periodSeconds: 3
+   ~~~
+
+2. 根据 yaml 创建 Pod
+
+   ~~~shell
+   $ kubectl create -f liveness-tcp-pod.yaml 
+   pod/probe-tcp created
+   ~~~
+
+3. 检查 Pod 状态
+
+   ~~~shell
+   $ kubectl get pod liveness-tcp-pod
+   NAME               READY   STATUS    RESTARTS   AGE
+   liveness-tcp-pod   1/1     Running   0          9s
+   ~~~
 
 
 
-**readinessProbe 可以和 livenessProbe 合并检测**
+###### **readinessProbe 可以和 livenessProbe 合并检测**  ✅
 
-~~~yaml
-apiVersion: vl
-kind: Pod
-metadata:
-  name: readiness-httpget-pod
-  namespace: default
-spec:
-  containers:
-  - name: readiness-httpget-container
-    image: hub.atguigu.com/library/myapp:v1
-    imagePullPolicy: IfNotPresent
-    readinessProbe:
-      httpGet:
-        port: 80
-        path: /index1.html
-      initialDelaySeconds: 1    <- 容器初始化后，延迟 1 秒开始调用
-      periodSeconds: 3					<- 重试检测时间，3s 检测一次
-    livenessProbe:
-      httpGet:
-        port: http
-        path: /index.html
-      initialDelaySeconds:
-      periodSeconds: 3
-      timeoutseconds: 10
-~~~
+1. 创建 yaml
 
+   ~~~shell
+   $ vim readiness-liveness-conbine.yaml
+   ~~~
 
+   ~~~yaml
+   apiVersion: vl
+   kind: Pod
+   metadata:
+     name: readiness-liveness-conbine
+     namespace: default
+   spec:
+     containers:
+     - name: readiness-httpget-container
+       image: registry.cn-hangzhou.aliyuncs.com/mingyuan_cloud_native/readiness-httpget-app:latest
+       imagePullPolicy: IfNotPresent
+       readinessProbe:
+         httpGet:
+           port: 80
+           path: /index1.html
+         initialDelaySeconds: 1		   # 容器初始化后，延迟 1 秒开始调用
+         periodSeconds: 3					   # 重试检测时间，3s 检测一次
+       livenessProbe:
+         httpGet:
+           port: http
+           path: /index.html
+         initialDelaySeconds:
+         periodSeconds: 3
+         timeoutSeconds: 10
+   ~~~
+
+2. 根据 yaml 创建 Pod
+
+   ~~~shell
+   $ kubectl create -f readiness-liveness-conbine.yaml
+   pod/readiness-liveness-conbine created
+   ~~~
+
+3. 检查 Pod 状态
+
+   ~~~shell
+   $ kubectl get pod readiness-liveness-conbine     
+   NAME                         READY   STATUS    RESTARTS   AGE
+   readiness-liveness-conbine   1/1     Running   0          65s
+   ~~~
+
+   
 
 #### Pod hok
 
-Pod hook(钩子)是由 kubernetes 管理的 kubelet 发起的，当容器中的进程启动前或各容器中的边程终止之前运行，这是包含在容器的生命周期之中。可以同时为Pod 中的所有容器都配置 hook
+Pod hook(钩子)是由 kubernetes 管理的 kubelet 发起的，当容器中的进程启动前或各容器中的边程终止之前运行，这是包含在容器的生命周期之中。可以同时为 Pod 中的所有容器都配置 hook
 Hook的类型包括两种：
 
 - exec：执行一段命令
@@ -674,60 +917,45 @@ restartPolicy 适用于 Pod 中的所有容器。restartPolicy 仅指通过同�
 
 
 
-#### 启动、退出动作
+#### 启动、退出动作 ✅
 
-~~~yaml
-apiVersion: v1
-kind: Pod
-metadata:
-  name: lifecycle-demo
-spec:
-  containers:
-  - name: lifecycle-demo-container
-    image: nginx
-    lifecycle:
-      postStart:
-        exec:
-          command: ["/bin/sh", "-c", "echo Hello from the poststart handler >/usr/share/message"]
-      preStop:
-        exec:
-          command: ["/bin/sh", "-c", "echo Hello from the prestop handler >/usr/share/message"]
-~~~
+1. 创建 yaml 
 
-~~~shell
-[root@master-88 ~]$ kubectl create -f post.yaml 
-pod/lifecycle-demo created
-~~~
+   ~~~shell
+   $ vim start-stop-pod.yaml
+   ~~~
 
+   ~~~yaml
+   apiVersion: v1
+   kind: Pod
+   metadata:
+     name: start-stop-demo
+   spec:
+     containers:
+     - name: lifecycle-demo-container
+       image: registry.cn-hangzhou.aliyuncs.com/mingyuan_cloud_native/readiness-httpget-app:latest
+       lifecycle:
+         postStart:
+           exec:
+             command: ["/bin/sh", "-c", "echo Hello from the poststart handler > /tmp/live"]
+         preStop:
+           exec:
+             command: ["/bin/sh", "-c", "echo Hello from the prestop handler > /tmp/live"]
+   ~~~
 
+2. 根据 yaml 创建 Pod
 
+   ~~~shell
+   $ kubectl create -f start-stop-pod.yaml 
+   pod/start-stop-demo created
+   ~~~
 
+3. 在 /tmp 中就可以看到 postStart 打印的内容
 
+   ~~~shell
+   /tmp # cat live 
+   Hello from the poststart handler
+   ~~~
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+   
 
