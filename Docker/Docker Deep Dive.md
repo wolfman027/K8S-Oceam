@@ -5614,6 +5614,137 @@ I promise to write a book review on Amazon
 
 太好了，volume 和数据还存在。
 
+让我们看看是否可以将现有的 bizvol 卷挂载到新的服务或容器中。
+
+运行以下命令创建一个名为 newctr 的新容器，将 bizvol 挂载到 **/vol**。
+
+~~~shell
+$ docker run -it \
+--name newctr \
+--mount source=bizvol,target=/vol \
+alpine sh
+~~~
+
+您的终端现在连接到新的容器。检查卷和数据是否按预期挂载。
+
+~~~shell
+# cat /vol/file1
+I promise to write a book review on Amazon
+~~~
+
+祝贺你。您已经创建了一个卷，向其写入了一些数据，删除了原始容器，将其挂载到第二个容器中，并验证了数据仍然存在。
+
+
+
+#### 跨集群节点共享存储
+
+将 Docker 与外部存储系统集成，可以向多个节点提供共享存储，以便运行在不同节点上的容器可以共享相同的卷。这些外部系统可以是云存储服务，也可以是本地数据中心的企业存储系统。例如，您可以向多个 Docker 主机提供单个存储LUN或NFS共享（共享卷），以便这些主机上的任何容器都可以访问和共享卷。图15.4 展示了一个外部存储系统向两个 Docker 节点提供一个共享卷。Docker 节点为外部系统使用适当的驱动程序，使共享卷对其中一个或两个容器可用。
+
+<img src="img/1741213970388.jpg" style="zoom:40%;" />
+
+构建这样的共享设置需要做很多事情。您需要访问专门的存储系统并了解它们的工作原理。您还需要一个与外部存储系统一起工作的卷驱动程序/插件。最后，您需要知道您的应用程序如何读写共享存储，以避免潜在的数据损坏。
+
+
+
+#### 潜在的数据损坏
+
+数据损坏是任何共享存储配置的主要问题。
+
+假设下面的示例基于图15.4。
+
+运行在 ctr1 中的应用程序向共享卷写入更新。但是，它不是直接提交更新，而是将其保存在本地缓存中以便更快地调用。此时，ctr1 中的应用程序认为它已将数据写入卷。然而，在 ctr1 刷新其缓存并将数据提交到卷之前，ctr2中的应用程序用不同的值更新相同的数据并直接将其提交到卷。此时，两个应用程序都认为它们已经更新了卷中的数据，但实际上，只有 ctr2 中的应用程序更新了。几秒钟后，ctr1 将数据刷新到卷中 并覆盖应用程序在 ctr2 中所做的更改。然而，两者都不是应用程序知道另一个程序所做的更改。
+
+这就是为什么需要设计共享数据的应用程序来协调对共享卷的更新。
+
+
+
+#### 清理
+
+~~~shell
+$ docker rm
+$ docker volume rm bizvol
+~~~
+
+
+
+### Volumes 与持久化数据 – 命令
+
+- `docker volume create` 创建新 volumes。默认情况下，它使用本地驱动程序创建它们，但是您可以使用-d标志来指定不同的驱动程序。
+- `docker volume ls` 列出所有 volumes 在你的 Docker 主机上。
+- `docker volume inspect` 展示 volume 信息细节，您可以使用这个命令查看卷在 Docker 主机的文件系统中的位置。
+- `docker volume prune` 删除容器或服务副本未使用的所有卷。请谨慎使用！
+- `docker volume rm` 删除具体未使用的 volumes 。
+
+
+
+## 第十六章 Docker 安全
+
+如果安全性很难，我们就不太可能实现它。幸运的是，Docker 中的大多数安全性都很简单，并且预先配置了合理的默认值。这意味着您无需付出任何努力就能获得适度安全的体验。默认设置并不完美，但它们是一个很好的起点。
+
+Docker 支持所有主要的 Linux 安全技术，并添加了一些自己的安全技术。因此，我划分了这一章，所以我们先介绍 Linux 安全技术，然后完成介绍 Docker 技术的章节：
+
+- Linux security technologies
+  - Kernel namespaces
+  - Control Groups
+  - Capabilities
+  - Mandatory Access Control
+  - seccomp
+
+- Docker security technologies
+  - Swarm security
+  - Docker Scout and vulnerability scanning
+  - Docker Content Trust
+  - Docker secrets
+
+本章主要关注Linux，但与 Docker 安全技术相关的部分适用于 Linux 和 Windows 容器。
+
+
+
+### Docker security – The TLDR
+
+好的安全是分层和纵深防御，分层越多越好。幸运的是，Docker 提供了很多安全层，包括图 16.1 所示的安全层。
+
+<img src="img/1741560526235.jpg" style="zoom:50%;" />
+
+正如您所看到的，Docker 利用了常见的 Linux 安全和工作负载隔离技术，包括名称空间、控制组、功能、强制访问控制（MAC）和seccomp。它为每个选项提供了合理的默认值，但您可以根据自己的特定需求定制它们。
+
+Docker 也有自己的安全技术，包括 Docker Scout 和 Docker Content Trust。Docker Scout 提供一流的漏洞扫描，扫描您的映像，提供有关已知漏洞的详细报告，并推荐解决方案。Docker Content Trust （DCT）允许您对图像进行加密签名和验证。如果您使用 Docker Swarm，您还将获得 Docker 自动配置的所有以下内容：加密节点id，相互身份验证（TLS），自动CA配置和证书轮换，安全集群连接令牌，加密集群存储，加密网络等等。其他与安全相关的技术也存在，但重要的是要知道 Docker 与主要的 Linux 安全技术一起工作，并添加了一些自己的技术。有时，Linux 安全技术可能很复杂，很难使用，但本地Docker安全技术总是很容易使用。
+
+
+
+### Kernel Namespaces - 内核空间
+
+内核名称空间（通常简称为名称空间）是构建容器的主要技术。
+
+让我们快速比较 namespace 和容器与管理程序和虚拟机（VM）。
+
+名称空间虚拟化操作系统结构，如进程树和文件系统，而管理程序虚拟化物理资源，如 cpu 和磁盘。在虚拟机模型中，管理程序通过对虚拟cpu、虚拟磁盘和虚拟网卡进行分组来创建虚拟机，以便每个虚拟机看起来、闻起来和感觉起来都像一台物理机。在容器模型中，名称空间通过对虚拟进程树、虚拟文件系统和虚拟网络接口进行分组来创建虚拟操作系统（容器），以便每个容器的外观、气味和感觉都与常规操作系统完全相同。
+
+在非常高的级别上，名称空间提供轻量级隔离，但不提供强大的安全边界。与虚拟机相比，容器的效率更高，但虚拟机的安全性更高。
+
+不过别担心。像 Docker 这样的平台实现了额外的安全技术，比如 cgroups、capabilities 和 seccomp，以提高容器的安全性。
+
+名称空间是一种久经考验的技术，在 Linux 内核中已经存在了很长时间。然而，在 Docker 出现之前，它们非常复杂，很难使用，并将所有的复杂性隐藏在简单的 Docker 运行命令和开发人员友好的 API 之后。
+
+在撰写本文时，每个 Docker 容器都有自己的以下命名空间实例：
+
+- Process ID (pid)
+- Network (net)
+- Filesystem/mount (mnt)
+- Inter-process Communication (ipc)
+- User (user)
+- UTS (uts)
+
+图16.2 显示了运行两个容器的单个 Docker 主机。主机操作系统有自己的命名空间集合（我们称之为根命名空间），每个容器都有自己的等效隔离命名空间集合。容器中的应用程序认为它们在自己的主机上运行，并且不知道根名称空间或其他容器中的名称空间。
+
+<img src="img/1741647193572.jpg" style="zoom:50%;" />
+
+让我们简单看看 Docker 是如何使用每个命名空间的：
+
+- Process ID namespace：Docker 使用 pid 命名空间为每个容器提供自己独立的进程树。这意味着每个容器都有自己的 PID 1，并且不能看到或访问在其他容器中运行的进程。任何容器也不能看到或访问在主机上运行的进程。
+
+
+
 
 
 
