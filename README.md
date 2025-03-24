@@ -6,6 +6,8 @@ https://labs.play-with-k8s.com/
 
 
 
+**Harbor**：Harbor 是一个开源的容器镜像仓库项目，它提供了企业级的镜像管理和安全功能。由VMware公司开发并维护，旨在帮助企业和组织更安全、高效地存储、签名和扫描容器镜像。Harbor 在 Docker Registry 的基础上增加了诸如用户权限管理、访问控制、活动审计日志、基于角色的访问控制（RBAC）、漏洞扫描以及镜像复制等功能。
+
 
 
 Learn Kubernetes Knowledge.

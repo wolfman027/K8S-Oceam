@@ -407,7 +407,23 @@ $ kubectl log {pod-name}
 
 
 
-## CronJob Spec
+## CronJob
+
+Cron Job 管理基于时间的 Job，即：
+
+- 在给定时间点只运行一次
+- 周期性地在给定时间点运行
+
+使用条件：当前使用的 Kubernetes 集群，版本 >=1.8（对 Cron Job）
+
+典型的用法如下所示：
+
+- 在给定的时间点调度Job 运行
+- 创建周期性运行的Job，例如：数据库备份、发送邮件
+
+
+
+###  Spec
 
 - `spec.template` 格式同 Pod
 - RestartPolicy 仅支持 Never 或 OnFailure
@@ -418,26 +434,87 @@ $ kubectl log {pod-name}
 
 
 
+- `.spec.schedule`：调度，必需字段，指定任务运行周期，格式同 Cron
+
+- `.spec.jobTemplate`：Job 模板，必需字段，指定需要运行的任务，格式同 Job
+
+- `.spec.startingDeadlineSeconds`：启动 Job 的期限（秒级别），该字段是可选的。如果因为任何原因而错过了被调度的时间，那么错过执行时间的 Job 将被认为是失败的。如果没有指定，则没有期限。
+
+- `.spec.concurrencyPolicy`：并发策略，该字段也是可选的。它指定了如何处理被 Cron Job 创建的 Job 的并发执行。只允许指定下面策略中的一种：
+
+  - Allow（默认）：允许并发运行 Job
+  - Forbid：禁止并发运行，如果前一个还没有完成，则直接跳过下一个 - 前一个没执行完，第二个就不会创建
+  - Replace：取消当前正在运行的 Job，用一个新的来替换
+
+  注意，当前策略只能应用于同一个 Cron Job 创建的 Job。如果存在多个 Cron Job，它们创建的 Job 之间总是允许并发运行。
+
+- `.spec.suspend`：挂起，该字段也是可选的。如果设置为 true ，后续所有执行都会被挂起。它对已经开始执行的 Job 不起作用。默认值为 false 。
+
+- `.spec.successfulJobsHistoryLimit` 和 `spec.failed]obsHistoryLimit`：历史限制，是可选的字段。它们指定了可以保留多少完成和失败的 Job。默认情况下，它们分别设置为 3 和 1。设置限制的值为0，相关类型的 Job 完成后将不会被保留。
 
 
 
+~~~yaml
+apiVersion: batch/v1beta1
+kind: CronJob
+metadata:
+  name: hello
+spec:
+  schedule: "*/1 * * * *""
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          containers:
+          - nane: hello
+            image: busybox
+            args:
+            - /bin/sh
+            - -c 
+            - date; echo Hello from Kubernetes cluster
+          restartPolicy: onFailure
+~~~
+
+~~~shell
+$ kubectl create -f cronjob.yaml
+
+$ kubectl get cornjob
+
+$ kubectl get job 
+
+$ kubectl delete depolyment --all
+
+$ kubectl delete deamonset --all
+
+$ kubectl get job 
+
+$ kubectl get job -w
+
+$ kubectl log {pod-name}
+
+~~~
+
+~~~shell
+$ kubectl get cronjob
+
+$ kubectl get jobs
+
+$ pods=$(kubectl get pods --selector=job-name=hel10-1202839834 --output=jsonpath={.items..metadata.name})
+
+$ kubectl logs $pods
+Mon Aug 29 21:34:09 UTC 2816
+Hello from the Kubernetes cluster
+
+#注意，删除 cronjob 的时候不会自动删除job，这些 job 可以用 kubectl delete job 来删除
+$ kubectl delete cronjob hello
+cronjob "hello" deleted
+~~~
 
 
 
+### CronJob 本身的一些限制
 
+创建 Job 操作应该是**幂等的**
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+Cron Job 的成功状态不好判断，因为他不会获取 Job 的状态。
 
