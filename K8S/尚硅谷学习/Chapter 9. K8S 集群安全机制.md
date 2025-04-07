@@ -319,67 +319,155 @@ Groups 书写格式与 Users 相同，都为一个字符串，并且没有特定
 
 <img src="img/1742552557339.jpg" style="zoom:50%;" />
 
+~~~json
+{
+    "CN": "devuser",
+    "hosts": [],
+    "key": {
+        "algo": "rsa",
+        "size": 2048
+    },
+    "names": [
+        {
+            "C": "CN",
+            "ST": "BeiJing",
+            "L": "BeiJing",
+            "0": "k8s",
+            "oU": "System"
+        }
+    ]
+}
+~~~
+
+1. 创建用户与文件夹
+
+~~~bash
+# 创建用户首先需要在 linux 系统中完成
+$ useradd devuser
+
+$ passwd devuser
+
+$ mkdir cert
+
+$ cd cert
+
+$ mkdir devuser
+
+$ cd devuser
+~~~
+
+2. 创建证书 devuser-csr.json
+
+~~~bash
+{
+    "CN": "devuser",
+    "hosts": [],	# 代表的是主机，空值则代表所有主机
+    "key": {
+        "algo": "rsa",
+        "size": 2048
+    },
+    "names": [
+        {
+            "C": "CN",
+            "ST": "BeiJing",
+            "L": "BeiJing",
+            "0": "k8s",
+            "oU": "System"
+        }
+    ]
+}
+~~~
+
+下载证书生成工具
+
+~~~bash
+#下载证书生成工具
+$ wget https://pkg.cfssl.org/R1.2/cfssl_linux-amd64
+$ mv cfssl linux-amd64 /usr/local/bin/cfssl
+
+$ wget https://pkg.cfssl.org/R1.2/cfssljson_linux-amd64
+$ mv cfssljson linux-amd64 /usr/local/bin/cfssljson
+
+$ wget https://pkg.cfssl.org/R1.2/cfssl-certinfo_linux-amd64mv
+$ cfssl-certinfo linux-amd64 /usr/local/bin/cfssl-certinfo
+
+$ cd /etc/kubernetes/pki
+
+$ cfssl gencert -ca=ca.crt -ca-key=ca.key -profile=kubernetes /root/devuser-csr.json | cfssljson -bare devuser
+# 会出现证书文件
+~~~
+
+3. 设置集群参数
+
+~~~bash
+$ export KUBE_APISERVER="https://{IP}:6443"
+
+$ kubectl config set-cluster kubernetes --certificate-authority=/etc/kubernetes/pki/ca.crtfig --embed-certs=true --server=${KUBE APISERVER}  --kubeconfig==devuser.kubeconfig
+# 就会出现 devuser.kubeconfig 文件
+~~~
+
+4. 设置客户端认证参数
+
+~~~bash
+$ kubectl config set-credentials devuser --client-certificate=/etc/kubernetes/pki/devuser.pem --client-key=/etc/kubernetes/pki/devuser-key.pem --embed-certs=true --kubeconfig=devuser.kubeconfig
+
+User "devuser" Set.
+~~~
+
+5. 设置上下文参数 —— 绑定某个命名空间
+
+~~~bash
+# 创建 命名空间
+
+$ kubectl create namespace dev
+
+$ kubectl config set-context kubernetes --cluster=kubernetes --user=devuser --namespace=dev --kubeconfig=devuser.kubeconfig
+
+Context "kubernetes" created.
+~~~
+
+6. 设置默认上下文
+
+~~~bash
+# 首先进行 role binding
+$ kubectl create rolebinding devuser-admin-binding --clusterrole=admin --user=devuser --namespace=dev
+
+# 进行拷贝文件
+$ cp devuser.kubeconfig /home/devuser/.kube/
+
+$ chown devuser:devuser /home/devuser/.kube/devuser.kubeconfig
+
+$ mv devuser.kubeconfig config
+
+$ kubectl config user-context kubernetes --kubecongif=config
+Switched to context "kubernetes".
+~~~
+
+转换完后，启动一个 Pod，然后看下信息
+
+~~~bash
+$ kubectl get pod -n default 
+# 会报错，因为他没有权限。
+~~~
 
 
 
+## 准入控制
 
+准入控制是 API Server 的插件集合，通过添加不同的插件，实现额外的准入控制规则。甚至于 API Server 的一此主要的功能都需要通过 Admission Controllers 实现，比如 ServiceAccount。
 
+官方文档上有一份针对不同版本的准入控制器推荐列表，其中最新的 1.14 的推荐列表是:
 
+~~~
+Namespacelifecycle,limitRanger,ServiceAccount,DefaultstorageClass,DefaultTolerationseconds,MutatingAdmissionWebhook,validatingAdmissionwebhook,ResourceQuota
+~~~
 
+列举几个插件的功能：
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+- NamespaceLifecycle：防止在不存在的 namespace 上创建对象，防止删除系统预置 namespace，删除 namespace 时，连带删除它的所有资源对象。
+- LimitRanger：确保请求的资源不会超过资源所在 Namespace 的 LimitRange 的限制。
+- ServiceAccount：实现了自动化添加 ServiceAccount。
+- ResourceQuota：确保请求的资源不会超过资源的 ResourceQuota 限制。
 
 
 
